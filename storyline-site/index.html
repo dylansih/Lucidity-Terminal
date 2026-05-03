@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Storyline</title>
+  <link rel="stylesheet" href="css/style.css" />
+
+  <!--
+    Three.js is loaded from the unpkg CDN via an import map so the project
+    works on GitHub Pages with zero build step. If you'd rather host
+    three.js yourself, copy three.js-master/build/three.module.js and
+    three.js-master/examples/jsm/ into a local /vendor folder and change
+    the URLs below to "./vendor/three.module.js" and "./vendor/jsm/".
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <div id="app"></div>
+
+  <div class="hud">drag to look around</div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

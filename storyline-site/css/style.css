@@ -1,0 +1,52 @@
+/* ==============================================================
+   Storyline — base page styling.
+   The actual visuals (sphere, panels, fisheye, film grain, sepia)
+   are rendered with WebGL by three.js. This file just sets up the
+   page chrome around the canvas.
+   ============================================================== */
+
+:root {
+  --bg:        #ece4d2;   /* off-white / beige paper */
+  --ink:       #2a2620;
+  --ink-soft:  #5a5247;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Times New Roman", Georgia, serif;
+  -webkit-font-smoothing: antialiased;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+body.dragging { cursor: grabbing; }
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+#app canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: fixed;
+  left: 24px;
+  bottom: 20px;
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.7;
+}
