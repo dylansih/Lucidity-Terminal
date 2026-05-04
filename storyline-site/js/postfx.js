@@ -41,15 +41,26 @@ export const FisheyeShader = {
     uniform vec2  resolution;
     varying vec2  vUv;
 
-    // Barrel distortion centered at (0.5, 0.5). Aspect-corrected so the
-    // distortion is radially symmetric in *screen pixels*, not UV space.
+    // Barrel distortion centered at (0.5, 0.5).
+    //
+    // The result is renormalized so the screen corner maps exactly to
+    // the source corner, while the middle of each edge is pushed out
+    // toward the corner — so straight lines bow outward (the fisheye
+    // look) and the rendered scene covers the entire viewport, with
+    // no empty paper-coloured margins.
     vec2 barrel(vec2 uv, float k) {
       float aspect = resolution.x / resolution.y;
       vec2 p = uv - 0.5;
       p.x *= aspect;
-      float r2 = dot(p, p);
-      float f = 1.0 + r2 * (k + k * r2);
-      p *= f;
+
+      float r2   = dot(p, p);
+      float f    = 1.0 + r2 * (k + k * r2);
+
+      // f at the screen corner: rMax² = (aspect/2)² + (1/2)²
+      float rMax2 = 0.25 * (aspect * aspect + 1.0);
+      float fMax  = 1.0 + rMax2 * (k + k * rMax2);
+
+      p *= f / fMax;
       p.x /= aspect;
       return p + 0.5;
     }
@@ -60,18 +71,16 @@ export const FisheyeShader = {
       vec2 uvG = barrel(vUv, strength);
       vec2 uvB = barrel(vUv, strength - chroma);
 
-      // anything that distorts off-screen falls back to the paper color
-      // (matches the page background so the corners feel like a curved
-      // screen rather than a hard cut)
-      vec3 col = bgColor;
+      // clamp as a safety net; with the renormalised barrel above the
+      // sample UVs already stay in [0, 1] for any aspect ratio.
+      uvR = clamp(uvR, 0.0, 1.0);
+      uvG = clamp(uvG, 0.0, 1.0);
+      uvB = clamp(uvB, 0.0, 1.0);
 
-      bool inR = uvR.x > 0.0 && uvR.x < 1.0 && uvR.y > 0.0 && uvR.y < 1.0;
-      bool inG = uvG.x > 0.0 && uvG.x < 1.0 && uvG.y > 0.0 && uvG.y < 1.0;
-      bool inB = uvB.x > 0.0 && uvB.x < 1.0 && uvB.y > 0.0 && uvB.y < 1.0;
-
-      if (inR) col.r = texture2D(tDiffuse, uvR).r;
-      if (inG) col.g = texture2D(tDiffuse, uvG).g;
-      if (inB) col.b = texture2D(tDiffuse, uvB).b;
+      vec3 col;
+      col.r = texture2D(tDiffuse, uvR).r;
+      col.g = texture2D(tDiffuse, uvG).g;
+      col.b = texture2D(tDiffuse, uvB).b;
 
       gl_FragColor = vec4(col, 1.0);
     }
@@ -89,7 +98,6 @@ export const FilmShader = {
     contrastAmount:  { value: 0.96 },
     vignetteAmount:  { value: 0.55 },
     scanlineAmount:  { value: 0.06 },
-    speckAmount:     { value: 1.0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -108,7 +116,6 @@ export const FilmShader = {
     uniform float contrastAmount;
     uniform float vignetteAmount;
     uniform float scanlineAmount;
-    uniform float speckAmount;
     varying vec2  vUv;
 
     float hash(vec2 p) {
@@ -145,13 +152,6 @@ export const FilmShader = {
       vec2 vc = vUv - 0.5;
       float vd = dot(vc, vc);
       col *= 1.0 - vignetteAmount * smoothstep(0.18, 0.78, vd);
-
-      // 7. occasional bright dust specks (cellular, very rare)
-      vec2 cell = floor(vUv * resolution / 3.0);
-      float speck = hash(cell + floor(time * 9.0));
-      if (speck > 0.9988) {
-        col += vec3(0.65, 0.58, 0.46) * speckAmount;
-      }
 
       gl_FragColor = vec4(col, 1.0);
     }

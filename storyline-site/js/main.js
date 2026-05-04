@@ -40,10 +40,10 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(PAPER);
 
 const camera = new THREE.PerspectiveCamera(
-  72,                                  // wide-ish FOV — fisheye does the rest
-  window.innerWidth / window.innerHeight,
-  0.1,
-  4000,
+  92,                                  // wide FOV so the rendered scene fills
+  window.innerWidth / window.innerHeight,   // the entire framebuffer; the
+  0.1,                                 // fisheye shader then bows it outward
+  4000,                                // without leaving paper-bg margins.
 );
 camera.position.set(0, 0, 0);
 camera.rotation.order = 'YXZ';         // yaw, then pitch — no roll
@@ -54,49 +54,154 @@ camera.rotation.order = 'YXZ';         // yaw, then pitch — no roll
 
 const RADIUS = 480;                    // distance from camera to panel face
 
-/*  Panel layout — [yawDeg, pitchDeg, widthDeg, heightDeg].
-    yaw   = horizontal angle around the camera (negative = left)
-    pitch = vertical angle (positive = up)
-    width / height are the panel's *angular* size, in degrees.
+/*  Panel layout — strict rows with uniform angular gaps.
 
-    The grid loosely mimics the SBS Storyline arrangement: a dense
-    band near the equator with a few peeking above and below, so
-    panning in any direction always reveals more content. */
-const PANEL_LAYOUT = [
-  // upper band
-  [-95,  22, 26, 18],
-  [-55,  26, 22, 16],
-  [-15,  20, 28, 20],
-  [ 25,  24, 22, 16],
-  [ 65,  22, 26, 18],
-  [105,  26, 22, 16],
+    Each row has its own height; within a row, every panel is the
+    same height but widths vary, so the mosaic mixes near-square
+    blocks and wide rectangles. Different row heights between rows
+    give vertical variety as well.
 
-  // central band — the "front" of the wrap-around screen
-  [-110,  2, 28, 20],
-  [ -75,  4, 22, 16],
-  [ -40,  0, 30, 22],
-  [  -8,  6, 22, 16],
-  [  25,  0, 30, 22],
-  [  60,  4, 22, 16],
-  [  95,  2, 28, 20],
-  [ 130,  6, 22, 16],
+    HGAP is the angular gap between panels horizontally; VGAP is
+    the angular gap between rows vertically. The horizontal walk
+    is scaled by 1/cos(pitch) so the perceived gap stays constant
+    no matter how high or low the row sits.
 
-  // lower band
-  [-100, -22, 26, 18],
-  [ -60, -26, 22, 16],
-  [ -20, -20, 30, 22],
-  [  20, -24, 22, 16],
-  [  60, -22, 30, 22],
-  [ 100, -26, 22, 16],
+    Pitch is kept under ±28° on top and bottom rows so that, after
+    the cos-scaled walk, no row's total yaw extent exceeds 360° —
+    otherwise panels at the extremes wrap around and overlap. */
 
-  // far behind the user — pannable to
-  [ 165,  6, 28, 20],
-  [-160,  4, 28, 20],
-  [ 175, -22, 26, 18],
-  [-150, -22, 26, 18],
+const HGAP = 3;   // degrees of angular gap between panels horizontally
+const VGAP = 3;   // degrees of angular gap between rows vertically
+
+const ROWS = [
+  // top row — short height, mix of small near-square tiles and a few wider ones
+  { h: 18, ws: [18, 24, 14, 28, 20, 18, 24, 14, 26, 20, 22, 18] },
+
+  // middle row — tallest, biggest panels, the "hero" band
+  { h: 28, ws: [28, 22, 36, 24, 32, 18, 30, 24, 28, 22, 32] },
+
+  // bottom row — short, varied
+  { h: 18, ws: [22, 18, 26, 14, 24, 18, 28, 22, 24, 14, 22, 20] },
 ];
 
-function makePanel(yawDeg, pitchDeg, wDeg, hDeg) {
+function buildLayout() {
+  const totalH = ROWS.reduce((s, r) => s + r.h, 0) + (ROWS.length - 1) * VGAP;
+  let pitchTop = totalH / 2;
+
+  const layout = [];
+  for (const row of ROWS) {
+    const rowPitch = pitchTop - row.h / 2;
+    // 1° of yaw at pitch p covers cos(p)° of arc-length, so we walk
+    // the yaw cursor faster at higher pitches to keep the perceived
+    // gap between panels constant across all rows.
+    const yawScale = 1 / Math.cos(THREE.MathUtils.degToRad(rowPitch));
+
+    const sumW = row.ws.reduce((s, w) => s + w, 0);
+    const usedYaw = (sumW + row.ws.length * HGAP) * yawScale;
+
+    let yawCursor = -usedYaw / 2 + (HGAP * yawScale) / 2;
+    for (const w of row.ws) {
+      const scaledW = w * yawScale;
+      const yawCenter = yawCursor + scaledW / 2;
+      // store the panel's *angular* width (w), not the yaw-scaled one
+      // — the panel still appears w° wide on screen; only its centre
+      // is shifted to maintain consistent gaps.
+      layout.push([yawCenter, rowPitch, w, row.h]);
+      yawCursor += scaledW + HGAP * yawScale;
+    }
+    pitchTop -= row.h + VGAP;
+  }
+  return layout;
+}
+
+const PANEL_LAYOUT = buildLayout();
+
+// Builds a rounded-rectangle Shape centred at (0, 0). Used as the
+// outline for ShapeGeometry so panels have softly rounded corners
+// instead of the hard 90° angles of THREE.PlaneGeometry.
+function roundedRectShape(w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  const s = new THREE.Shape();
+  s.moveTo(-w / 2 + r, -h / 2);
+  s.lineTo( w / 2 - r, -h / 2);
+  s.quadraticCurveTo( w / 2, -h / 2,  w / 2, -h / 2 + r);
+  s.lineTo( w / 2,  h / 2 - r);
+  s.quadraticCurveTo( w / 2,  h / 2,  w / 2 - r,  h / 2);
+  s.lineTo(-w / 2 + r,  h / 2);
+  s.quadraticCurveTo(-w / 2,  h / 2, -w / 2,  h / 2 - r);
+  s.lineTo(-w / 2, -h / 2 + r);
+  s.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + r, -h / 2);
+  return s;
+}
+
+// Wraps ShapeGeometry and remaps UVs from raw vertex coordinates
+// (the three.js default for ShapeGeometry) to a clean [0, 1]² that
+// matches the panel's bounding rectangle. Without this, textures
+// would tile based on world units instead of fitting the panel.
+function buildPanelGeometry(w, h, r) {
+  const geom = new THREE.ShapeGeometry(roundedRectShape(w, h, r), 8);
+  const pos  = geom.attributes.position;
+  const uvs  = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    uvs[i * 2]     = (pos.getX(i) + w / 2) / w;
+    uvs[i * 2 + 1] = (pos.getY(i) + h / 2) / h;
+  }
+  geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  return geom;
+}
+
+// Image list — every panel pulls one of these and cycles through.
+// Add or reorder freely; if there are more panels than images, the
+// list wraps. Drop new files into /media/ and reference them here.
+const IMAGES = [
+  'media/DSC00086.jpg',
+  'media/DSC00436_2.jpg',
+  'media/DSC02977.jpg',
+  'media/DSC03353.jpg',
+  'media/DSC03383.jpg',
+  'media/DSC_0153.jpg',
+  'media/IMG_0149.jpg',
+  'media/IMG_2219.jpg',
+  'media/IMG_3660.jpg',
+  'media/IMG_3769.jpg',
+  'media/IMG_3834.jpg',
+  'media/IMG_3839.jpg',
+  'media/IMG_4001.jpg',
+  'media/IMG_4936.jpg',
+  'media/IMG_5519.jpg',
+  'media/IMG_6369.jpg',
+];
+
+const textureLoader = new THREE.TextureLoader();
+
+// Loads `url` as a texture and, once the image arrives, configures
+// `texture.repeat` / `texture.offset` so the image fills the panel
+// using a CSS object-fit:cover style — preserve aspect ratio, crop
+// the overflowing axis. Also flips the panel's material to white
+// once the image is ready so the texture isn't multiplied dark.
+function applyCoverImage(material, url, panelAspect) {
+  const tex = textureLoader.load(url, () => {
+    const imgAspect = tex.image.width / tex.image.height;
+    if (imgAspect > panelAspect) {
+      // image wider than panel → crop sides
+      const r = panelAspect / imgAspect;
+      tex.repeat.set(r, 1);
+      tex.offset.set((1 - r) / 2, 0);
+    } else {
+      // image taller than panel → crop top/bottom
+      const r = imgAspect / panelAspect;
+      tex.repeat.set(1, r);
+      tex.offset.set(0, (1 - r) / 2);
+    }
+    material.map = tex;
+    material.color.setHex(0xffffff);
+    material.needsUpdate = true;
+  });
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+}
+
+function makePanel(yawDeg, pitchDeg, wDeg, hDeg, url) {
   const yaw   = THREE.MathUtils.degToRad(yawDeg);
   const pitch = THREE.MathUtils.degToRad(pitchDeg);
 
@@ -104,13 +209,18 @@ function makePanel(yawDeg, pitchDeg, wDeg, hDeg) {
   const w = 2 * RADIUS * Math.tan(THREE.MathUtils.degToRad(wDeg / 2));
   const h = 2 * RADIUS * Math.tan(THREE.MathUtils.degToRad(hDeg / 2));
 
-  const geom = new THREE.PlaneGeometry(w, h);
-  // BLANK content block — flat dark fill, ready to be swapped for
-  // a THREE.MeshBasicMaterial({ map: imageOrVideoTexture }) later.
+  // ~5% of the smaller side as the corner radius
+  const r = Math.min(w, h) * 0.05;
+  const geom = buildPanelGeometry(w, h, r);
+
+  // material starts dark (so unloaded panels match the placeholder
+  // look). applyCoverImage swaps map + color when the texture lands.
   const mat = new THREE.MeshBasicMaterial({
     color: 0x1a1610,
     side:  THREE.DoubleSide,
   });
+  if (url) applyCoverImage(mat, url, w / h);
+
   const mesh = new THREE.Mesh(geom, mat);
 
   // place on a sphere of radius RADIUS around the camera
@@ -124,7 +234,10 @@ function makePanel(yawDeg, pitchDeg, wDeg, hDeg) {
 }
 
 const panelGroup = new THREE.Group();
-PANEL_LAYOUT.forEach(p => panelGroup.add(makePanel(...p)));
+PANEL_LAYOUT.forEach((p, i) => {
+  const url = IMAGES[i % IMAGES.length];
+  panelGroup.add(makePanel(...p, url));
+});
 scene.add(panelGroup);
 
 /* -------------------------------------------------------------- */
@@ -175,8 +288,10 @@ function onMove(e) {
   const dy = e.clientY - state.lastY;
   state.lastX = e.clientX;
   state.lastY = e.clientY;
-  state.targetYaw   -= dx * DRAG_SENS;
-  state.targetPitch -= dy * DRAG_SENS;
+  // drag pulls the world with the cursor: dragging right rotates the
+  // camera left so on-screen content slides right with the mouse.
+  state.targetYaw   += dx * DRAG_SENS;
+  state.targetPitch += dy * DRAG_SENS;
   state.targetPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, state.targetPitch));
 }
 function onUp(e) {
