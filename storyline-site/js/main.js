@@ -63,67 +63,67 @@ camera.position.set(0, 0, 0);
 camera.rotation.order = 'YXZ';         // yaw, then pitch — no roll
 
 /* -------------------------------------------------------------- */
-/* 2. content panels arranged on the inside of a sphere           */
+/* 2. content panels arranged on the inside of a vertical cylinder */
 /* -------------------------------------------------------------- */
 
 const RADIUS = 480;                    // distance from camera to panel face
 
-/*  Panel layout — strict rows with uniform angular gaps.
+/*  Panel layout — strict horizontal rows on a vertical cylinder.
 
-    Each row has its own height; within a row, every panel is the
-    same height but widths vary, so the mosaic mixes near-square
-    blocks and wide rectangles. Different row heights between rows
-    give vertical variety as well.
+    Earlier versions placed panels on a sphere with each panel
+    facing the camera at the origin, which tilted top and bottom
+    rows back toward the viewer. The result: adjacent panels at
+    the corners of a row had visibly different angles, and the
+    gap between two neighbours was a wedge rather than a uniform
+    strip — see the second screenshot the user flagged.
 
-    HGAP is the angular gap between panels horizontally; VGAP is
-    the angular gap between rows vertically. The horizontal walk
-    is scaled by 1/cos(pitch) so the perceived gap stays constant
-    no matter how high or low the row sits.
+    Now every panel sits on a vertical cylinder of radius RADIUS
+    and is rotated only around the world Y axis (no pitch tilt),
+    so it shares world-up with its neighbours. Adjacent panels in
+    a row have perfectly aligned top and bottom edges; the only
+    visual variation comes from the camera projection and the
+    fisheye shader, which is exactly the SBS Storyline look.
 
-    Pitch is kept under ±28° on top and bottom rows so that, after
-    the cos-scaled walk, no row's total yaw extent exceeds 360° —
-    otherwise panels at the extremes wrap around and overlap. */
+    Each row stores:
+      y  — vertical position of the row's centre (world units)
+      h  — panel height for the row (world units)
+      ws — list of panel widths (world units), one per panel
 
-const HGAP = 3;   // degrees of angular gap between panels horizontally
-const VGAP = 3;   // degrees of angular gap between rows vertically
+    HGAP is the gap between panels along the cylinder's arc, in
+    world units, so the perceived gap stays constant regardless
+    of the row's height. */
+
+const HGAP = 14;
 
 const ROWS = [
-  // top row — short height, mix of small near-square tiles and a few wider ones
-  { h: 18, ws: [18, 24, 14, 28, 20, 18, 24, 14, 26, 20, 22, 18] },
+  // top — wider rectangles, hero scale
+  { y:  240, h: 160, ws: [180, 130, 220, 160, 200, 140, 190, 170, 210] },
 
-  // middle row — tallest, biggest panels, the "hero" band
-  { h: 28, ws: [28, 22, 36, 24, 32, 18, 30, 24, 28, 22, 32] },
+  // upper middle — shorter, denser
+  { y:   72, h: 120, ws: [220, 160, 280, 200, 160, 240, 180, 220] },
 
-  // bottom row — short, varied
-  { h: 18, ws: [22, 18, 26, 14, 24, 18, 28, 22, 24, 14, 22, 20] },
+  // lower middle — shorter, denser
+  { y:  -72, h: 120, ws: [200, 240, 160, 220, 180, 260, 140, 200] },
+
+  // bottom — mirrors the top in scale
+  { y: -240, h: 160, ws: [180, 220, 150, 200, 170, 220, 140, 200, 190] },
 ];
 
 function buildLayout() {
-  const totalH = ROWS.reduce((s, r) => s + r.h, 0) + (ROWS.length - 1) * VGAP;
-  let pitchTop = totalH / 2;
-
   const layout = [];
   for (const row of ROWS) {
-    const rowPitch = pitchTop - row.h / 2;
-    // 1° of yaw at pitch p covers cos(p)° of arc-length, so we walk
-    // the yaw cursor faster at higher pitches to keep the perceived
-    // gap between panels constant across all rows.
-    const yawScale = 1 / Math.cos(THREE.MathUtils.degToRad(rowPitch));
+    const totalArc =
+      row.ws.reduce((s, w) => s + w, 0) + row.ws.length * HGAP;
 
-    const sumW = row.ws.reduce((s, w) => s + w, 0);
-    const usedYaw = (sumW + row.ws.length * HGAP) * yawScale;
-
-    let yawCursor = -usedYaw / 2 + (HGAP * yawScale) / 2;
+    // arc cursor walks along the cylinder surface in world units;
+    // dividing by RADIUS converts arc length to yaw (radians).
+    let arcCursor = -totalArc / 2 + HGAP / 2;
     for (const w of row.ws) {
-      const scaledW = w * yawScale;
-      const yawCenter = yawCursor + scaledW / 2;
-      // store the panel's *angular* width (w), not the yaw-scaled one
-      // — the panel still appears w° wide on screen; only its centre
-      // is shifted to maintain consistent gaps.
-      layout.push([yawCenter, rowPitch, w, row.h]);
-      yawCursor += scaledW + HGAP * yawScale;
+      const arcCenter = arcCursor + w / 2;
+      const yawDeg = THREE.MathUtils.radToDeg(arcCenter / RADIUS);
+      layout.push([yawDeg, row.y, w, row.h]);
+      arcCursor += w + HGAP;
     }
-    pitchTop -= row.h + VGAP;
   }
   return layout;
 }
@@ -168,22 +168,40 @@ function buildPanelGeometry(w, h, r) {
 // Add or reorder freely; if there are more panels than images, the
 // list wraps. Drop new files into /media/ and reference them here.
 const IMAGES = [
-  'media/DSC00086.jpg',
-  'media/DSC00436_2.jpg',
-  'media/DSC02977.jpg',
-  'media/DSC03353.jpg',
-  'media/DSC03383.jpg',
-  'media/DSC_0153.jpg',
-  'media/IMG_0149.jpg',
-  'media/IMG_2219.jpg',
   'media/IMG_3660.jpg',
-  'media/IMG_3769.jpg',
-  'media/IMG_3834.jpg',
+  'media/DSC00086.jpg',
+  'media/IMG_9779.jpg',
   'media/IMG_3839.jpg',
+  'media/IMG_2652.jpg',
   'media/IMG_4001.jpg',
-  'media/IMG_4936.jpg',
+  'media/XGY_2735.jpg',
+  'media/DSC03353.jpg',
+  'media/IMG_0697.jpg',
   'media/IMG_5519.jpg',
+  'media/DSC02977.jpg',
+  'media/IMG_2331.jpg',
+  'media/IMG_1731.jpg',
+  'media/IMG_2219.jpg',
+  'media/IMG_4136.jpg',
+  'media/DSC_0153.jpg',
+  'media/IMG_8360.jpg',
+  'media/IMG_3769.jpg',
+  'media/IMG_9776.jpg',
+  'media/IMG_4936.jpg',
+  'media/102_1643.jpg',
+  'media/IMG_0171.jpg',
   'media/IMG_6369.jpg',
+  'media/IMG_2655.jpg',
+  'media/DSC03383.jpg',
+  'media/IMG_3834.jpg',
+  'media/P1070516.jpg',
+  'media/IMG_1370.jpg',
+  'media/DSC00436_2.jpg',
+  'media/IMG_6986.jpg',
+  'media/XGY_2723_2.jpg',
+  'media/IMG_0149.jpg',
+  'media/IMG_9609.jpg',
+  'media/IMG_0110.jpg',
 ];
 
 const textureLoader = new THREE.TextureLoader();
@@ -215,13 +233,8 @@ function applyCoverImage(material, url, panelAspect) {
   tex.anisotropy = MAX_ANISO;
 }
 
-function makePanel(yawDeg, pitchDeg, wDeg, hDeg, url) {
-  const yaw   = THREE.MathUtils.degToRad(yawDeg);
-  const pitch = THREE.MathUtils.degToRad(pitchDeg);
-
-  // angular size → world-space size at distance RADIUS
-  const w = 2 * RADIUS * Math.tan(THREE.MathUtils.degToRad(wDeg / 2));
-  const h = 2 * RADIUS * Math.tan(THREE.MathUtils.degToRad(hDeg / 2));
+function makePanel(yawDeg, y, w, h, url) {
+  const yaw = THREE.MathUtils.degToRad(yawDeg);
 
   // ~5% of the smaller side as the corner radius
   const r = Math.min(w, h) * 0.05;
@@ -237,12 +250,17 @@ function makePanel(yawDeg, pitchDeg, wDeg, hDeg, url) {
 
   const mesh = new THREE.Mesh(geom, mat);
 
-  // place on a sphere of radius RADIUS around the camera
-  const x =  RADIUS * Math.cos(pitch) * Math.sin(yaw);
-  const y =  RADIUS * Math.sin(pitch);
-  const z = -RADIUS * Math.cos(pitch) * Math.cos(yaw);
-  mesh.position.set(x, y, z);
-  mesh.lookAt(0, 0, 0);                // face the camera at the centre
+  // place on a vertical cylinder of radius RADIUS — the Y position
+  // comes straight from the row, no pitch math.
+  mesh.position.set(
+     RADIUS * Math.sin(yaw),
+     y,
+    -RADIUS * Math.cos(yaw),
+  );
+  // face the central vertical axis at the same height: rotates only
+  // around world Y, so the panel stays upright and adjacent panels
+  // in the row share a perfectly aligned top and bottom edge.
+  mesh.lookAt(0, y, 0);
 
   return mesh;
 }
