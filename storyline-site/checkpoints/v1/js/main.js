@@ -327,23 +327,14 @@ function makePanel(yawDeg, y, w, h, url) {
 
   // material starts dark (so unloaded panels match the placeholder
   // look). applyCoverImage swaps map + color when the texture lands.
-  // Plain alpha blending (no alphaTest) so material.opacity can ramp
-  // smoothly between 0 and 1 when stories enter / leave.
-  //
-  // depthWrite is OFF: with depthWrite on, every panel rendered at
-  // intermediate opacity (during a fade) would punch its own shape
-  // into the depth buffer. Whichever fading panel happened to draw
-  // first would then occlude — at partial alpha — anything drawn
-  // behind it later, producing the dark streaks the user reported.
-  // Disabling depthWrite lets the rear-to-front sort do its job
-  // and keeps the alpha math clean throughout the transition.
+  // alphaTest 0.5 turns the rounded-rect mask into a clean cutout —
+  // no transparency-sort artefacts against the cylinder skin behind.
   const mat = new THREE.MeshBasicMaterial({
     color:        0x1a1610,
     side:         THREE.DoubleSide,
     alphaMap:     buildRoundedAlphaTexture(w, h, r),
     transparent:  true,
-    opacity:      1,
-    depthWrite:   false,
+    alphaTest:    0.5,
   });
   if (url) applyCoverImage(mat, url, w / h);
 
@@ -539,194 +530,8 @@ function addTerminalSign() {
       mesh.geometry = buildCurvedPanelGeometry(planeW, newH, RADIUS);
     });
   }
-  return mesh;
 }
-const terminalSign = addTerminalSign();
-
-/* -------------------------------------------------------------- */
-/* 2c. story mode — click a panel, content swaps out for a story  */
-/* -------------------------------------------------------------- */
-
-/* Mode machine:
-     'terminal'      — initial 38 photos + sign (current world)
-     'transitioning' — opacity is mid-ramp; clicks/keys are ignored
-     'story'         — clicked photo is exploded into placeholder
-                       content blocks on the same cylinder
-
-   Both states use the same camera, fisheye + film passes and
-   cylinder layout — only the meshes parented to the scene swap.
-   Each fadeable mesh carries `userData.targetOpacity`; the tick
-   loop lerps `material.opacity` toward it every frame. */
-
-let mode = 'terminal';
-let currentStoryIdx = -1;
-
-// All meshes that should fade out when entering a story (photos + sign).
-const terminalFadeables = [...panelGroup.children, terminalSign];
-for (const m of terminalFadeables) m.userData.targetOpacity = 1;
-
-// Group that holds whatever story-mode content is currently mounted.
-const storyGroup = new THREE.Group();
-scene.add(storyGroup);
-
-// Pseudo-random number generator seeded by panel index, so the gray
-// placeholder layout for a given photo is stable across re-entries.
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function buildStoryContent(idx) {
-  // Disposable: clear whatever was there before
-  while (storyGroup.children.length) {
-    const m = storyGroup.children.pop();
-    m.geometry?.dispose();
-    if (m.material) {
-      m.material.alphaMap?.dispose();
-      m.material.dispose();
-    }
-  }
-
-  const rand = mulberry32(idx + 1);
-  // Same row Y / heights as the photo layout, but a fresh randomised
-  // distribution of widths so every story looks slightly different.
-  const STORY_ROWS = [
-    { y:  240, h: 160, count: 9  },
-    { y:   72, h: 130, count: 8  },
-    { y:  -72, h: 130, count: 8  },
-    { y: -240, h: 160, count: 9  },
-  ];
-
-  for (const row of STORY_ROWS) {
-    const ws = [];
-    for (let i = 0; i < row.count; i++) ws.push(150 + Math.round(rand() * 140));
-    const total = ws.reduce((s, w) => s + w, 0) + ws.length * HGAP;
-    let cursor = -total / 2 + HGAP / 2;
-    for (const w of ws) {
-      const center = cursor + w / 2;
-      const yawDeg = THREE.MathUtils.radToDeg(center / RADIUS);
-      const r = Math.min(w, row.h) * 0.05;
-      const gray = 0x30 + Math.floor(rand() * 0x20);    // 0x30–0x4F
-      const colorHex = (gray << 16) | (gray << 8) | gray;
-
-      const mesh = new THREE.Mesh(
-        buildCurvedPanelGeometry(w, row.h, RADIUS),
-        new THREE.MeshBasicMaterial({
-          color:       colorHex,
-          side:        THREE.DoubleSide,
-          alphaMap:    buildRoundedAlphaTexture(w, row.h, r),
-          transparent: true,
-          opacity:     0,                  // fades in
-          depthWrite:  false,              // see makePanel for why
-        }),
-      );
-      const yaw = THREE.MathUtils.degToRad(yawDeg);
-      mesh.position.set(
-         RADIUS * Math.sin(yaw),
-         row.y,
-        -RADIUS * Math.cos(yaw),
-      );
-      mesh.lookAt(0, row.y, 0);
-      // Start invisible AND with targetOpacity 0 — staggeredSet() will
-      // later flip targetOpacity to 1 with a random delay per mesh.
-      mesh.userData.targetOpacity = 0;
-      storyGroup.add(mesh);
-      cursor += w + HGAP;
-    }
-  }
-}
-
-const hudEl = document.querySelector('.hud');
-const HUD_TERMINAL = 'drag to look around';
-const HUD_STORY    = 'esc to return to terminal';
-
-/* Staggered fade timing.
-   Each block's fade starts at a random offset in [0, STAGGER_MS),
-   then takes roughly FADE_TAIL_MS for the per-frame opacity lerp
-   (FADE_LERP = 0.15) to actually snap to the target value. So one
-   phase is bounded at STAGGER_MS + FADE_TAIL_MS. Transitions run
-   sequentially (out fully, then in fully) so old and new content
-   are never simultaneously mid-fade — that simultaneity was the
-   source of the "dark streaks" the user reported. */
-const STAGGER_MS   = 1500;
-const FADE_TAIL_MS = 700;          // 700 ms ≈ 42 frames at 60 Hz, plenty of margin
-const PHASE_MS     = STAGGER_MS + FADE_TAIL_MS;
-
-function staggeredSet(meshes, value) {
-  // Set each mesh's targetOpacity to `value` after an independent
-  // random delay. Returns nothing — the per-frame stepFade loop drives
-  // the actual lerp. Caller still has to wait PHASE_MS to know all
-  // meshes are settled.
-  for (const m of meshes) {
-    setTimeout(() => { m.userData.targetOpacity = value; },
-               Math.random() * STAGGER_MS);
-  }
-}
-
-function enterStory(panelIdx) {
-  if (mode !== 'terminal') return;
-  mode = 'transitioning';
-  currentStoryIdx = panelIdx;
-  if (hudEl) hudEl.textContent = HUD_STORY;
-
-  // The clicked panel is exempt — it stays fully opaque throughout
-  // the transition so the user keeps the photo they tapped as a
-  // visual anchor while the story content materialises around it.
-  const clicked = panelGroup.children[panelIdx];
-  const fading  = terminalFadeables.filter(m => m !== clicked);
-
-  // Phase 1: stagger-fade the home content out.
-  staggeredSet(fading, 0);
-
-  // Phase 2 fires once Phase 1 is fully complete (everyone snapped
-  // to 0). Then build the story content and stagger its fade-in.
-  setTimeout(() => {
-    for (const m of fading) m.visible = false;
-    buildStoryContent(panelIdx);
-    staggeredSet(storyGroup.children, 1);
-
-    setTimeout(() => {
-      mode = 'story';
-    }, PHASE_MS);
-  }, PHASE_MS);
-}
-
-function exitStory() {
-  if (mode !== 'story') return;
-  mode = 'transitioning';
-  if (hudEl) hudEl.textContent = HUD_TERMINAL;
-
-  const clicked = currentStoryIdx >= 0 ? panelGroup.children[currentStoryIdx] : null;
-  const returning = terminalFadeables.filter(m => m !== clicked);
-
-  // Phase 1: stagger-fade the story content out.
-  staggeredSet(storyGroup.children, 0);
-
-  // Phase 2: dispose story, restore + stagger-fade-in home content.
-  setTimeout(() => {
-    while (storyGroup.children.length) {
-      const m = storyGroup.children.pop();
-      m.geometry?.dispose();
-      m.material.alphaMap?.dispose();
-      m.material.dispose();
-    }
-    for (const m of returning) m.visible = true;
-    staggeredSet(returning, 1);
-
-    setTimeout(() => {
-      mode = 'terminal';
-      currentStoryIdx = -1;
-    }, PHASE_MS);
-  }, PHASE_MS);
-}
-
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && mode === 'story') exitStory();
-});
+addTerminalSign();
 
 /* -------------------------------------------------------------- */
 /* 3. faint sphere skin behind the panels                         */
@@ -766,39 +571,12 @@ const DRAG_SENS   = 0.0028;
 
 const dom = renderer.domElement;
 
-// Click-vs-drag detection: any pointer-down that ends within CLICK_PX
-// of the start position and CLICK_MS milliseconds counts as a click;
-// otherwise the gesture is treated as a drag (and a click is suppressed).
-const CLICK_PX = 5;
-const CLICK_MS = 400;
-
-const raycaster  = new THREE.Raycaster();
-const pointerNDC = new THREE.Vector2();
-
-function tryClickAtPointer(e) {
-  if (mode !== 'terminal') return;
-  const rect = renderer.domElement.getBoundingClientRect();
-  pointerNDC.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-  pointerNDC.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-  raycaster.setFromCamera(pointerNDC, camera);
-  const hits = raycaster.intersectObjects(panelGroup.children, false);
-  if (!hits.length) return;
-  const idx = panelGroup.children.indexOf(hits[0].object);
-  if (idx >= 0) enterStory(idx);
-}
-
-/* Pointer handling: no setPointerCapture — pointermove + pointerup
-   are already attached to `window`, so a drag that wanders off the
-   canvas still tracks correctly. Click vs drag is decided entirely
-   at pointerup from start/end coords + elapsed time. */
 function onDown(e) {
   state.dragging = true;
   state.lastX = e.clientX;
   state.lastY = e.clientY;
-  state.downX = e.clientX;
-  state.downY = e.clientY;
-  state.downT = performance.now();
   document.body.classList.add('dragging');
+  dom.setPointerCapture?.(e.pointerId);
 }
 function onMove(e) {
   if (!state.dragging) return;
@@ -813,15 +591,9 @@ function onMove(e) {
   state.targetPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, state.targetPitch));
 }
 function onUp(e) {
-  if (!state.dragging) return;          // ignore stray pointerups
   state.dragging = false;
   document.body.classList.remove('dragging');
-  const dx = Math.abs(e.clientX - state.downX);
-  const dy = Math.abs(e.clientY - state.downY);
-  const dt = performance.now() - state.downT;
-  if (dx < CLICK_PX && dy < CLICK_PX && dt < CLICK_MS) {
-    tryClickAtPointer(e);
-  }
+  dom.releasePointerCapture?.(e.pointerId);
 }
 
 dom.addEventListener('pointerdown', onDown);
@@ -863,20 +635,6 @@ window.addEventListener('resize', onResize);
 onResize();
 
 const clock = new THREE.Clock();
-
-// Lerp factor per frame for opacity fades. 0.15 ≈ 70% of the way to
-// the target in ~7 frames at 60 Hz, matching the FADE_MS setTimeout.
-const FADE_LERP = 0.15;
-
-function stepFade(mesh) {
-  const mat = mesh.material;
-  if (!mat || !('opacity' in mat)) return;
-  const tgt = mesh.userData.targetOpacity ?? 1;
-  if (mat.opacity === tgt) return;
-  mat.opacity += (tgt - mat.opacity) * FADE_LERP;
-  if (Math.abs(mat.opacity - tgt) < 0.005) mat.opacity = tgt;
-}
-
 function tick() {
   // smooth follow toward target rotation
   state.yaw   += (state.targetYaw   - state.yaw)   * 0.09;
@@ -884,19 +642,7 @@ function tick() {
 
   camera.rotation.set(state.pitch, state.yaw, 0, 'YXZ');
 
-  // drive fade animations
-  for (const m of terminalFadeables) stepFade(m);
-  for (const m of storyGroup.children) stepFade(m);
-
-  // Keep the time uniform bounded so the grain hash inside FilmShader
-  // doesn't drift. The hash is sensitive to its input magnitude: when
-  // time grows large, `vUv*resolution + time*73` reaches the precision
-  // floor of float32 and the per-pixel noise stops being independent —
-  // adjacent pixels start sharing the same hashed sin() bucket and the
-  // pattern visibly slides toward one corner. Wrapping at 10 s keeps
-  // the input bounded forever; the user can't see the wrap because
-  // each frame's noise already looks random vs the previous frame.
-  filmPass.uniforms.time.value = clock.getElapsedTime() % 10.0;
+  filmPass.uniforms.time.value = clock.getElapsedTime();
 
   composer.render();
   requestAnimationFrame(tick);
