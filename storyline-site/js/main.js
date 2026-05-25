@@ -580,8 +580,61 @@ function mulberry32(seed) {
   };
 }
 
+/* Spawn a single gray placeholder mesh at (yawCenter, y) with the
+   given world-space width / height. Pushed straight into storyGroup
+   with opacity 0 — staggeredSet() flips targetOpacity to 1 later. */
+function placeStoryBlock(yawCenter, y, w, h, rand) {
+  const r       = Math.min(w, h) * 0.05;
+  const gray    = 0x30 + Math.floor(rand() * 0x20);   // 0x30–0x4F
+  const colorHex = (gray << 16) | (gray << 8) | gray;
+
+  const mesh = new THREE.Mesh(
+    buildCurvedPanelGeometry(w, h, RADIUS),
+    new THREE.MeshBasicMaterial({
+      color:       colorHex,
+      side:        THREE.DoubleSide,
+      alphaMap:    buildRoundedAlphaTexture(w, h, r),
+      transparent: true,
+      opacity:     0,
+      depthWrite:  false,                            // see makePanel for why
+    }),
+  );
+  mesh.position.set(
+     RADIUS * Math.sin(yawCenter),
+     y,
+    -RADIUS * Math.cos(yawCenter),
+  );
+  mesh.lookAt(0, y, 0);
+  mesh.userData.targetOpacity = 0;
+  storyGroup.add(mesh);
+}
+
+/* Place ~STORY_BLOCK_COUNT gray placeholder panels in a cluster
+   around the selected photo. Sizes deliberately mix single-row
+   rectangles with taller "2-row spanning" blocks so the cluster
+   doesn't feel uniform. Random sampling + collision-rejection
+   keeps the cluster organic regardless of where the photo lives. */
+const STORY_BLOCK_COUNT = 10;
+
+// Width / height presets in world units. Heights ~150–200 read as a
+// single row of the photo dome; heights ≥250 visually span two photo
+// rows. The repeated entries weight the random pick toward the
+// proportions that read best on the cylinder.
+const STORY_SIZE_PRESETS = [
+  // single-row-ish
+  { w: 180, h: 140 },
+  { w: 220, h: 160 },
+  { w: 260, h: 180 },
+  { w: 300, h: 180 },
+  // 2-row spanners — height ≥ row1.h + gap + row2.h equivalent
+  { w: 200, h: 270 },
+  { w: 260, h: 300 },
+  { w: 320, h: 280 },
+  { w: 240, h: 340 },
+];
+
 function buildStoryContent(idx) {
-  // Disposable: clear whatever was there before
+  // Clear any existing story content
   while (storyGroup.children.length) {
     const m = storyGroup.children.pop();
     m.geometry?.dispose();
@@ -592,51 +645,64 @@ function buildStoryContent(idx) {
   }
 
   const rand = mulberry32(idx + 1);
-  // Same row Y / heights as the photo layout, but a fresh randomised
-  // distribution of widths so every story looks slightly different.
-  const STORY_ROWS = [
-    { y:  240, h: 160, count: 9  },
-    { y:   72, h: 130, count: 8  },
-    { y:  -72, h: 130, count: 8  },
-    { y: -240, h: 160, count: 9  },
-  ];
 
-  for (const row of STORY_ROWS) {
-    const ws = [];
-    for (let i = 0; i < row.count; i++) ws.push(150 + Math.round(rand() * 140));
-    const total = ws.reduce((s, w) => s + w, 0) + ws.length * HGAP;
-    let cursor = -total / 2 + HGAP / 2;
-    for (const w of ws) {
-      const center = cursor + w / 2;
-      const yawDeg = THREE.MathUtils.radToDeg(center / RADIUS);
-      const r = Math.min(w, row.h) * 0.05;
-      const gray = 0x30 + Math.floor(rand() * 0x20);    // 0x30–0x4F
-      const colorHex = (gray << 16) | (gray << 8) | gray;
+  // Selected photo's bounding box on the cylinder, plus HGAP cushion
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const yawC     = THREE.MathUtils.degToRad(yawCDeg);
+  const HGAP_ARC = HGAP / RADIUS;
+  // VGAP matches HGAP so the gaps between blocks read with the same
+  // visual weight as the home page's panel-to-panel margins.
+  const VGAP     = HGAP;
+  const photoBox = {
+    yaw1: yawC - (wC / RADIUS) / 2,
+    yaw2: yawC + (wC / RADIUS) / 2,
+    y1:   yC - hC / 2,
+    y2:   yC + hC / 2,
+  };
 
-      const mesh = new THREE.Mesh(
-        buildCurvedPanelGeometry(w, row.h, RADIUS),
-        new THREE.MeshBasicMaterial({
-          color:       colorHex,
-          side:        THREE.DoubleSide,
-          alphaMap:    buildRoundedAlphaTexture(w, row.h, r),
-          transparent: true,
-          opacity:     0,                  // fades in
-          depthWrite:  false,              // see makePanel for why
-        }),
-      );
-      const yaw = THREE.MathUtils.degToRad(yawDeg);
-      mesh.position.set(
-         RADIUS * Math.sin(yaw),
-         row.y,
-        -RADIUS * Math.cos(yaw),
-      );
-      mesh.lookAt(0, row.y, 0);
-      // Start invisible AND with targetOpacity 0 — staggeredSet() will
-      // later flip targetOpacity to 1 with a random delay per mesh.
-      mesh.userData.targetOpacity = 0;
-      storyGroup.add(mesh);
-      cursor += w + HGAP;
-    }
+  // Cluster search window — centred on the photo in BOTH yaw and y.
+  // Previously y was uniform across the whole dome, which scattered
+  // blocks far from the photo when it sat off-centre. Anchoring y on
+  // yC keeps the cluster visually tight around whatever was clicked.
+  const YAW_HALF_RANGE = 1.0;                        // ≈ ±57°
+  const Y_HALF_RANGE   = 260;
+  const Y_BOUND        = 340;                        // dome vertical reach
+
+  const placed = [photoBox];                         // photo counts as occupied
+  let attempts = 0;
+  const MAX_ATTEMPTS = 700;
+
+  function overlaps(c) {
+    return placed.some(p =>
+      c.yaw1 < p.yaw2 + HGAP_ARC && c.yaw2 > p.yaw1 - HGAP_ARC &&
+      c.y1   < p.y2   + VGAP     && c.y2   > p.y1   - VGAP
+    );
+  }
+
+  while (placed.length - 1 < STORY_BLOCK_COUNT && attempts < MAX_ATTEMPTS) {
+    attempts++;
+
+    const preset = STORY_SIZE_PRESETS[Math.floor(rand() * STORY_SIZE_PRESETS.length)];
+    const w = preset.w + Math.round((rand() - 0.5) * 40);     // small jitter
+    const h = preset.h + Math.round((rand() - 0.5) * 30);
+    const arcW = w / RADIUS;
+
+    const cyaw = yawC + (rand() * 2 - 1) * YAW_HALF_RANGE;
+    const cy   = yC   + (rand() * 2 - 1) * Y_HALF_RANGE;
+
+    const cand = {
+      yaw1: cyaw - arcW / 2,
+      yaw2: cyaw + arcW / 2,
+      y1:   cy   - h    / 2,
+      y2:   cy   + h    / 2,
+    };
+
+    // Clamp to dome reach
+    if (cand.y1 < -Y_BOUND || cand.y2 > Y_BOUND) continue;
+    if (overlaps(cand)) continue;
+
+    placeStoryBlock(cyaw, cy, w, h, rand);
+    placed.push(cand);
   }
 }
 
