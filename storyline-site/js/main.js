@@ -529,26 +529,43 @@ function addTerminalSign() {
 
   // Rebuild once Anton is actually on the page.
   //
-  // Why not `document.fonts.ready`? Canvas measureText() does not
-  // count as a font-face "in use" for the FontFaceSet, so on a cold
-  // load `.ready` resolves before Anton has even started downloading.
-  // The .then() fires, the rebuild runs with the SAME fallback
-  // metrics as the first paint, and on the live site (where Anton
-  // isn't cached) the title ends up truncated and the gap collapses.
+  // Why this is fiddly: on a cold load, canvas measureText() does
+  // NOT register a font face with the FontFaceSet, so
+  // `document.fonts.ready` resolves before Anton even starts
+  // downloading. The first paint then uses a fallback face, sizes
+  // the canvas wrong, and on the live site the title ends up
+  // truncated and the gap collapses.
   //
-  // `document.fonts.load(spec)` both initiates the load AND returns
-  // a promise that resolves only after that exact face is ready, so
-  // the rebuild measures with Anton actually present.
-  if (document.fonts && document.fonts.load) {
-    document.fonts.load('600 132px "Anton"').then(() => {
-      const rebuilt = buildTerminalCanvas();
-      mat.map.image = rebuilt.canvas;
-      mat.map.needsUpdate = true;
-      const newH = planeW * (rebuilt.canvasH / rebuilt.canvasW);
-      mesh.geometry.dispose();
-      mesh.geometry = buildCurvedPanelGeometry(planeW, newH, RADIUS);
-    }).catch(() => { /* webfont blocked — keep the fallback rendering */ });
+  // Three independent triggers so the rebuild can't fall through:
+  //   1. Explicit document.fonts.load() with Anton's actual weight
+  //      (Google's CSS defines Anton at 400). This both initiates
+  //      the fetch and returns a promise that resolves only after
+  //      that face is ready.
+  //   2. document.fonts.ready as a backstop.
+  //   3. A 2.5 s timeout, in case neither of the above fires (e.g.
+  //      the webfont is blocked by an extension or offline).
+  // rebuildOnce dedupes — whichever trigger wins gets to do the work.
+  function rebuildTerminalCanvas() {
+    const rebuilt = buildTerminalCanvas();
+    mat.map.image      = rebuilt.canvas;
+    mat.map.needsUpdate = true;
+    const newH = planeW * (rebuilt.canvasH / rebuilt.canvasW);
+    mesh.geometry.dispose();
+    mesh.geometry = buildCurvedPanelGeometry(planeW, newH, RADIUS);
   }
+  let rebuilt = false;
+  function rebuildOnce() {
+    if (rebuilt) return;
+    rebuilt = true;
+    rebuildTerminalCanvas();
+  }
+  if (document.fonts && document.fonts.load) {
+    document.fonts.load('400 132px "Anton"').then(rebuildOnce).catch(() => {});
+  }
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(rebuildOnce).catch(() => {});
+  }
+  setTimeout(rebuildOnce, 2500);
   return mesh;
 }
 const terminalSign = addTerminalSign();
