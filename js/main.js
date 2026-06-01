@@ -726,24 +726,35 @@ const STORY_SIZE_PRESETS = [
   { w: 240, h: 340 },
 ];
 
-/* Target panel areas (world units²) for real-content panels. We pick
-   one of these per item, then derive width/height from the item's
-   aspect so panels stay visually-proportioned to their media.
-   Range is set so 12–15 items can be packed around a hero cover
-   without hard collisions; bigger means richer-looking but more
-   layout failures. */
-const STORY_ITEM_AREAS = [
-  22000,    // small
-  32000,    // medium
-  46000,    // large
-  68000,    // 2-row hero
+/* Target panel areas (world units²) for real-content panels. Each
+   photo picks one of these at random; the derived width/height
+   then follows the item's aspect ratio. The cover is 370 × 305 =
+   ~113 000, so photos are always smaller than the cover. */
+const STORY_PHOTO_AREAS = [
+  18000,    // small
+  26000,    // medium
+  38000,    // large
+  54000,    // 2-row hero
 ];
+
+/* Videos are always the biggest media block: roughly the same area
+   as the cover (slightly bigger so they read as the heroes of the
+   story), with width / height derived from each video's aspect. */
+const VIDEO_TARGET_AREA = 125000;     // cover area is ~113 000
+
+/* Minimum angular separation between video panels, measured around
+   the cover as polar angle. 2 videos sit roughly opposite; 3 videos
+   spread into thirds. Without this they clump on the same side. */
+function videoMinSeparation(videoCount) {
+  if (videoCount >= 3) return Math.PI / 3;        // 60°
+  return Math.PI * 0.55;                          // ≈ 99°
+}
 
 /* Shared cluster parameters used by both the manifest path and the
    gray-placeholder fallback. */
 const CLUSTER_PARAMS = {
-  yawHalfRange: 1.4,            // ≈ ±80° from the cover
-  yHalfRange:   320,            // y window centred on the cover
+  yawHalfRange: 1.55,           // ≈ ±89° from the cover
+  yHalfRange:   340,            // y window centred on the cover (matches yBound)
   yBound:       340,            // dome vertical reach
   vgap:         HGAP,           // vertical gap between blocks = HGAP for visual parity
 };
@@ -811,7 +822,7 @@ function clusterPlace(idx, targetCount, makeNextCandidate) {
   while (slot < targetCount) {
     const candidate = makeNextCandidate(rand, slot);
     if (!candidate) break;                          // manifest exhausted
-    const { w, h, place } = candidate;
+    const { w, h, place, validate } = candidate;
     const arcW = w / RADIUS;
 
     let landed = false;
@@ -826,6 +837,9 @@ function clusterPlace(idx, targetCount, makeNextCandidate) {
       };
       if (cand.y1 < -yBound || cand.y2 > yBound) continue;
       if (overlaps(cand)) continue;
+      // Optional extra rejection (e.g. videos enforcing angular
+      // separation from already-placed videos around the cover).
+      if (validate && !validate(cyaw, cy)) continue;
       place(cyaw, cy);
       placed.push(cand);
       landed = true;
@@ -837,25 +851,76 @@ function clusterPlace(idx, targetCount, makeNextCandidate) {
 }
 
 function buildStoryFromItems(idx, items) {
-  // Shuffle items so the visual ordering of media in the cluster is
-  // randomised per re-entry, but still deterministic per cover.
   const rand = mulberry32(idx + 1);
-  const shuffled = items.slice();
-  for (let i = shuffled.length - 1; i > 0; i--) {
+
+  // Split into videos and photos. Videos are placed FIRST so they
+  // get prime real estate around the cover (and so their separation
+  // constraint is easier to satisfy in an otherwise empty cluster).
+  const videos = items.filter(it => it.t === 'video');
+  const photos = items.filter(it => it.t === 'image');
+
+  // Shuffle photos for per-re-entry variety; videos keep manifest
+  // order so the placement spread is deterministic relative to the
+  // first video chosen.
+  const shuffledPhotos = photos.slice();
+  for (let i = shuffledPhotos.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    [shuffledPhotos[i], shuffledPhotos[j]] = [shuffledPhotos[j], shuffledPhotos[i]];
   }
 
-  clusterPlace(idx, shuffled.length, (rng, placedCount) => {
-    const item = shuffled[placedCount];
-    if (!item) return null;
-    const area = STORY_ITEM_AREAS[Math.floor(rng() * STORY_ITEM_AREAS.length)];
-    const w = Math.round(Math.sqrt(area * item.a));
-    const h = Math.round(Math.sqrt(area / item.a));
-    return {
-      w, h,
-      place: (yawCenter, y) => placeStoryItem(yawCenter, y, w, h, item),
-    };
+  // Pull cover position out so the video angular-separation check
+  // can compute polar angle around the cover, not the world origin.
+  const [yawCDeg, yC] = PANEL_LAYOUT[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+
+  const placedVideoAngles = [];                    // polar angle around cover
+  const minSep = videoMinSeparation(videos.length);
+
+  let videoIdx = 0;
+  let photoIdx = 0;
+
+  clusterPlace(idx, videos.length + shuffledPhotos.length, (rng) => {
+    // Phase 1: videos
+    if (videoIdx < videos.length) {
+      const item = videos[videoIdx];
+      videoIdx++;
+      const w = Math.round(Math.sqrt(VIDEO_TARGET_AREA * item.a));
+      const h = Math.round(Math.sqrt(VIDEO_TARGET_AREA / item.a));
+      return {
+        w, h,
+        validate: (yawCenter, y) => {
+          // Polar angle of this candidate around the cover, treating
+          // yaw as horizontal arc length so x and y are commensurate.
+          const dx = (yawCenter - yawC) * RADIUS;
+          const dy = (y - yC);
+          const angle = Math.atan2(dy, dx);
+          return placedVideoAngles.every(a => {
+            let d = Math.abs(angle - a);
+            if (d > Math.PI) d = 2 * Math.PI - d;
+            return d >= minSep;
+          });
+        },
+        place: (yawCenter, y) => {
+          const dx = (yawCenter - yawC) * RADIUS;
+          const dy = (y - yC);
+          placedVideoAngles.push(Math.atan2(dy, dx));
+          placeStoryItem(yawCenter, y, w, h, item);
+        },
+      };
+    }
+    // Phase 2: photos, sized at a random preset
+    if (photoIdx < shuffledPhotos.length) {
+      const item = shuffledPhotos[photoIdx];
+      photoIdx++;
+      const area = STORY_PHOTO_AREAS[Math.floor(rng() * STORY_PHOTO_AREAS.length)];
+      const w = Math.round(Math.sqrt(area * item.a));
+      const h = Math.round(Math.sqrt(area / item.a));
+      return {
+        w, h,
+        place: (yawCenter, y) => placeStoryItem(yawCenter, y, w, h, item),
+      };
+    }
+    return null;
   });
 }
 
