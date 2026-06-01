@@ -95,18 +95,17 @@ const RADIUS = 480;                    // distance from camera to panel face
 
 const HGAP = 14;
 
+/* 2×5 cover layout.
+   Each panel is the size of ~four of the old small photo panels —
+   wide enough to read as a hero, tall enough to span what used to be
+   two rows. The two rows together cover the same vertical extent as
+   the old four-row grid (≈ ±320 y), and the per-row arc roughly
+   matches the old top row's arc, so the dome footprint is unchanged. */
 const ROWS = [
-  // top — wider rectangles, hero scale (10 panels)
-  { y:  240, h: 160, ws: [180, 130, 220, 160, 200, 175, 140, 190, 170, 210] },
-
-  // upper middle — shorter, denser (9 panels)
-  { y:   72, h: 120, ws: [220, 160, 280, 200, 200, 160, 240, 180, 220] },
-
-  // lower middle — shorter, denser (9 panels)
-  { y:  -72, h: 120, ws: [200, 240, 160, 220, 180, 260, 230, 140, 200] },
-
-  // bottom — mirrors the top in scale (10 panels)
-  { y: -240, h: 160, ws: [180, 220, 150, 200, 175, 170, 220, 140, 200, 190] },
+  // top row — covers 1–5
+  { y:  166, h: 305, ws: [370, 370, 370, 370, 370] },
+  // bottom row — covers 6–10
+  { y: -166, h: 305, ws: [370, 370, 370, 370, 370] },
 ];
 
 function buildLayout() {
@@ -244,51 +243,37 @@ function buildRoundedAlphaTexture(w, h, r) {
   return tex;
 }
 
-// Image list — every panel pulls one of these and cycles through.
-// Add or reorder freely; if there are more panels than images, the
-// list wraps. Drop new files into /media/ and reference them here.
+// 10 hero covers, top row (1–5) then bottom row (6–10). Order in the
+// array matches PANEL_LAYOUT order (buildLayout walks ROWS top → down,
+// left → right within each row), so cover-01 lands top-left, cover-05
+// top-right, cover-06 bottom-left, cover-10 bottom-right.
 const IMAGES = [
-  'media/IMG_3660.jpg',
-  'media/DSC00086.jpg',
-  'media/IMG_9779.jpg',
-  'media/IMG_3839.jpg',
-  'media/IMG_2652.jpg',
-  'media/IMG_4001.jpg',
-  'media/XGY_2735.jpg',
-  'media/DSC03353.jpg',
-  'media/IMG_0697.jpg',
-  'media/IMG_5519.jpg',
-  'media/DSC02977.jpg',
-  'media/IMG_2331.jpg',
-  'media/IMG_1731.jpg',
-  'media/IMG_2219.jpg',
-  'media/IMG_4136.jpg',
-  'media/DSC_0153.jpg',
-  'media/IMG_8360.jpg',
-  'media/IMG_3769.jpg',
-  'media/IMG_9776.jpg',
-  'media/IMG_4936.jpg',
-  'media/102_1643.jpg',
-  'media/IMG_0171.jpg',
-  'media/IMG_6369.jpg',
-  'media/IMG_2655.jpg',
-  'media/DSC03383.jpg',
-  'media/IMG_3834.jpg',
-  'media/P1070516.jpg',
-  'media/IMG_1370.jpg',
-  'media/DSC00436_2.jpg',
-  'media/IMG_6986.jpg',
-  'media/XGY_2723_2.jpg',
-  'media/IMG_0149.jpg',
-  'media/IMG_9609.jpg',
-  'media/IMG_0110.jpg',
-  'media/IMG_5012.jpg',
-  'media/IMG_5013.jpg',
-  'media/IMG_5014.jpg',
-  'media/IMG_5015.jpg',
+  'media/cover-01.jpg',
+  'media/cover-02.jpg',
+  'media/cover-03.jpg',
+  'media/cover-04.jpg',
+  'media/cover-05.jpg',
+  'media/cover-06.jpg',
+  'media/cover-07.jpg',
+  'media/cover-08.jpg',
+  'media/cover-09.jpg',
+  'media/cover-10.jpg',
 ];
 
 const textureLoader = new THREE.TextureLoader();
+
+/* Per-image source-pixel Y shift for the cover crop.
+   The default crop centres the source image in the panel; for a few
+   portrait covers the subject sits near the very bottom of the source
+   (cat in cover-05, sheep in cover-08), and the centred crop puts
+   them at the bottom edge of the panel — partially clipped. A
+   positive value here shifts the visible crop window DOWN in the
+   source image by that many pixels, which moves the subject UP in
+   the rendered panel. Tuned by eye per image. */
+const COVER_Y_PIXEL_OFFSET = {
+  'media/cover-05.jpg': 100,
+  'media/cover-08.jpg': 100,
+};
 
 // Loads `url` as a texture and, once the image arrives, configures
 // `texture.repeat` / `texture.offset` so the image fills the panel
@@ -307,7 +292,14 @@ function applyCoverImage(material, url, panelAspect) {
       // image taller than panel → crop top/bottom
       const r = imgAspect / panelAspect;
       tex.repeat.set(1, r);
-      tex.offset.set(0, (1 - r) / 2);
+      const baseOffsetY = (1 - r) / 2;
+      // V coords on the texture with flipY=true: V=0 is the bottom
+      // of the source, V=1 is the top. To shift the visible window
+      // DOWN in the source (i.e. expose more of the bottom), we
+      // DECREASE offset.y by pxShift / source-height.
+      const pxShift = COVER_Y_PIXEL_OFFSET[url] || 0;
+      const vShift  = -pxShift / tex.image.height;
+      tex.offset.set(0, baseOffsetY + vShift);
     }
     material.map = tex;
     material.color.setHex(0xffffff);
