@@ -309,6 +309,63 @@ function applyCoverImage(material, url, panelAspect) {
   tex.anisotropy = MAX_ANISO;
 }
 
+/* Same object-fit:cover treatment, but for video sources. Creates an
+   HTMLVideoElement with autoplay / muted / loop / playsinline, wraps it
+   in a THREE.VideoTexture, and waits for `loadedmetadata` so
+   videoWidth/Height are known before computing the cover crop.
+   The video element is stashed on material.userData so exitStory can
+   stop playback and detach the resource when the panel is disposed. */
+function applyCoverVideo(material, url, panelAspect) {
+  const video = document.createElement('video');
+  video.muted        = true;
+  video.loop         = true;
+  video.autoplay     = true;
+  video.playsInline  = true;
+  video.preload      = 'auto';
+  // Safari iOS requires the attribute form of these for autoplay to
+  // actually fire on first paint — setting the JS property isn't
+  // enough on older WebKit.
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+  // Detached <video> elements can be throttled / suspended by some
+  // browsers (Chrome will pause playback to save resources), which
+  // leaves the VideoTexture frozen on its first frame. Park them in
+  // an off-screen container so they stay live.
+  video.style.cssText =
+    'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+  document.body.appendChild(video);
+  video.src = url;
+
+  const tex = new THREE.VideoTexture(video);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter  = THREE.LinearFilter;
+  tex.magFilter  = THREE.LinearFilter;
+  tex.anisotropy = MAX_ANISO;
+
+  const applyCrop = () => {
+    const imgAspect = video.videoWidth / video.videoHeight;
+    if (!imgAspect) return;
+    if (imgAspect > panelAspect) {
+      const r = panelAspect / imgAspect;
+      tex.repeat.set(r, 1);
+      tex.offset.set((1 - r) / 2, 0);
+    } else {
+      const r = imgAspect / panelAspect;
+      tex.repeat.set(1, r);
+      tex.offset.set(0, (1 - r) / 2);
+    }
+    material.map = tex;
+    material.color.setHex(0xffffff);
+    material.needsUpdate = true;
+    video.play().catch(() => { /* autoplay blocked — quietly stay paused */ });
+  };
+  if (video.readyState >= 1) applyCrop();
+  else video.addEventListener('loadedmetadata', applyCrop, { once: true });
+
+  material.userData.videoEl = video;
+}
+
 function makePanel(yawDeg, y, w, h, url) {
   const yaw = THREE.MathUtils.degToRad(yawDeg);
 
@@ -628,101 +685,217 @@ function placeStoryBlock(yawCenter, y, w, h, rand) {
   storyGroup.add(mesh);
 }
 
-/* Place ~STORY_BLOCK_COUNT gray placeholder panels in a cluster
-   around the selected photo. Sizes deliberately mix single-row
-   rectangles with taller "2-row spanning" blocks so the cluster
-   doesn't feel uniform. Random sampling + collision-rejection
-   keeps the cluster organic regardless of where the photo lives. */
+/* Per-cover content manifest. Indexed by panel index (0 = cover-01,
+   etc). Each item is { t: 'image' | 'video', u: url, a: aspect }.
+   Aspect is the source media's natural width/height, pre-baked so
+   the cluster layout can pick a panel size before the asset loads. */
+const STORIES = {
+  // cover-01 — Nathan
+  0: [
+    { t: 'image', u: 'media/story-01/p01.jpg', a: 0.665 },
+    { t: 'image', u: 'media/story-01/p02.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p03.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p04.jpg', a: 1.500 },
+    { t: 'image', u: 'media/story-01/p05.jpg', a: 1.778 },
+    { t: 'image', u: 'media/story-01/p06.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p07.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p08.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p09.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p10.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-01/p11.jpg', a: 1.333 },
+    { t: 'video', u: 'media/story-01/v01.mp4', a: 1.778 },
+    { t: 'video', u: 'media/story-01/v02.mp4', a: 1.778 },
+    { t: 'video', u: 'media/story-01/v03.mp4', a: 1.778 },
+  ],
+};
+
+/* ~STORY_BLOCK_COUNT gray placeholder panels — only used as the
+   fallback when a cover has no manifest entry in STORIES yet. */
 const STORY_BLOCK_COUNT = 10;
 
-// Width / height presets in world units. Heights ~150–200 read as a
-// single row of the photo dome; heights ≥250 visually span two photo
-// rows. The repeated entries weight the random pick toward the
-// proportions that read best on the cylinder.
 const STORY_SIZE_PRESETS = [
   // single-row-ish
   { w: 180, h: 140 },
   { w: 220, h: 160 },
   { w: 260, h: 180 },
   { w: 300, h: 180 },
-  // 2-row spanners — height ≥ row1.h + gap + row2.h equivalent
+  // 2-row spanners
   { w: 200, h: 270 },
   { w: 260, h: 300 },
   { w: 320, h: 280 },
   { w: 240, h: 340 },
 ];
 
+/* Target panel areas (world units²) for real-content panels. We pick
+   one of these per item, then derive width/height from the item's
+   aspect so panels stay visually-proportioned to their media.
+   Range is set so 12–15 items can be packed around a hero cover
+   without hard collisions; bigger means richer-looking but more
+   layout failures. */
+const STORY_ITEM_AREAS = [
+  22000,    // small
+  32000,    // medium
+  46000,    // large
+  68000,    // 2-row hero
+];
+
+/* Shared cluster parameters used by both the manifest path and the
+   gray-placeholder fallback. */
+const CLUSTER_PARAMS = {
+  yawHalfRange: 1.4,            // ≈ ±80° from the cover
+  yHalfRange:   320,            // y window centred on the cover
+  yBound:       340,            // dome vertical reach
+  vgap:         HGAP,           // vertical gap between blocks = HGAP for visual parity
+};
+
 function buildStoryContent(idx) {
-  // Clear any existing story content
+  // Clear any existing story content. Videos need their <video>
+  // element paused + detached or they keep streaming bytes invisibly.
   while (storyGroup.children.length) {
     const m = storyGroup.children.pop();
     m.geometry?.dispose();
     if (m.material) {
+      const v = m.material.userData?.videoEl;
+      if (v) {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+        v.remove();
+      }
+      m.material.map?.dispose();
       m.material.alphaMap?.dispose();
       m.material.dispose();
     }
   }
 
+  const items = STORIES[idx];
+  if (items && items.length) buildStoryFromItems(idx, items);
+  else                        buildStoryPlaceholders(idx);
+}
+
+/* Shared cluster placement.
+   buildCandidates: a generator/iterator that emits objects
+     { w, h, place(yawCenter, y) }  — w / h are world dims;
+     place() actually drops the mesh once we've found a non-overlapping
+     spot. The caller calls .next() until the target count is met. */
+function clusterPlace(idx, targetCount, makeNextCandidate) {
   const rand = mulberry32(idx + 1);
 
-  // Selected photo's bounding box on the cylinder, plus HGAP cushion
   const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
   const yawC     = THREE.MathUtils.degToRad(yawCDeg);
   const HGAP_ARC = HGAP / RADIUS;
-  // VGAP matches HGAP so the gaps between blocks read with the same
-  // visual weight as the home page's panel-to-panel margins.
-  const VGAP     = HGAP;
+  const { yawHalfRange, yHalfRange, yBound, vgap } = CLUSTER_PARAMS;
+
   const photoBox = {
     yaw1: yawC - (wC / RADIUS) / 2,
     yaw2: yawC + (wC / RADIUS) / 2,
     y1:   yC - hC / 2,
     y2:   yC + hC / 2,
   };
-
-  // Cluster search window — centred on the photo in BOTH yaw and y.
-  // Previously y was uniform across the whole dome, which scattered
-  // blocks far from the photo when it sat off-centre. Anchoring y on
-  // yC keeps the cluster visually tight around whatever was clicked.
-  const YAW_HALF_RANGE = 1.0;                        // ≈ ±57°
-  const Y_HALF_RANGE   = 260;
-  const Y_BOUND        = 340;                        // dome vertical reach
-
-  const placed = [photoBox];                         // photo counts as occupied
-  let attempts = 0;
-  const MAX_ATTEMPTS = 700;
+  const placed = [photoBox];
 
   function overlaps(c) {
     return placed.some(p =>
       c.yaw1 < p.yaw2 + HGAP_ARC && c.yaw2 > p.yaw1 - HGAP_ARC &&
-      c.y1   < p.y2   + VGAP     && c.y2   > p.y1   - VGAP
+      c.y1   < p.y2   + vgap     && c.y2   > p.y1   - vgap
     );
   }
 
-  while (placed.length - 1 < STORY_BLOCK_COUNT && attempts < MAX_ATTEMPTS) {
-    attempts++;
-
-    const preset = STORY_SIZE_PRESETS[Math.floor(rand() * STORY_SIZE_PRESETS.length)];
-    const w = preset.w + Math.round((rand() - 0.5) * 40);     // small jitter
-    const h = preset.h + Math.round((rand() - 0.5) * 30);
+  const MAX_ATTEMPTS_PER_SLOT = 200;
+  let slot = 0;
+  let placedCount = 0;
+  // Walk through every requested slot. If an individual item can't
+  // find a non-overlapping spot inside MAX_ATTEMPTS_PER_SLOT tries,
+  // we simply skip it and move on to the next — better to drop one
+  // hard-to-place item than to leave the whole cluster empty.
+  while (slot < targetCount) {
+    const candidate = makeNextCandidate(rand, slot);
+    if (!candidate) break;                          // manifest exhausted
+    const { w, h, place } = candidate;
     const arcW = w / RADIUS;
 
-    const cyaw = yawC + (rand() * 2 - 1) * YAW_HALF_RANGE;
-    const cy   = yC   + (rand() * 2 - 1) * Y_HALF_RANGE;
-
-    const cand = {
-      yaw1: cyaw - arcW / 2,
-      yaw2: cyaw + arcW / 2,
-      y1:   cy   - h    / 2,
-      y2:   cy   + h    / 2,
-    };
-
-    // Clamp to dome reach
-    if (cand.y1 < -Y_BOUND || cand.y2 > Y_BOUND) continue;
-    if (overlaps(cand)) continue;
-
-    placeStoryBlock(cyaw, cy, w, h, rand);
-    placed.push(cand);
+    let landed = false;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_SLOT && !landed; attempt++) {
+      const cyaw = yawC + (rand() * 2 - 1) * yawHalfRange;
+      const cy   = yC   + (rand() * 2 - 1) * yHalfRange;
+      const cand = {
+        yaw1: cyaw - arcW / 2,
+        yaw2: cyaw + arcW / 2,
+        y1:   cy   - h    / 2,
+        y2:   cy   + h    / 2,
+      };
+      if (cand.y1 < -yBound || cand.y2 > yBound) continue;
+      if (overlaps(cand)) continue;
+      place(cyaw, cy);
+      placed.push(cand);
+      landed = true;
+    }
+    if (landed) placedCount++;
+    slot++;
   }
+  return placedCount;
+}
+
+function buildStoryFromItems(idx, items) {
+  // Shuffle items so the visual ordering of media in the cluster is
+  // randomised per re-entry, but still deterministic per cover.
+  const rand = mulberry32(idx + 1);
+  const shuffled = items.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  clusterPlace(idx, shuffled.length, (rng, placedCount) => {
+    const item = shuffled[placedCount];
+    if (!item) return null;
+    const area = STORY_ITEM_AREAS[Math.floor(rng() * STORY_ITEM_AREAS.length)];
+    const w = Math.round(Math.sqrt(area * item.a));
+    const h = Math.round(Math.sqrt(area / item.a));
+    return {
+      w, h,
+      place: (yawCenter, y) => placeStoryItem(yawCenter, y, w, h, item),
+    };
+  });
+}
+
+function buildStoryPlaceholders(idx) {
+  clusterPlace(idx, STORY_BLOCK_COUNT, (rng) => {
+    const preset = STORY_SIZE_PRESETS[Math.floor(rng() * STORY_SIZE_PRESETS.length)];
+    const w = preset.w + Math.round((rng() - 0.5) * 40);
+    const h = preset.h + Math.round((rng() - 0.5) * 30);
+    return {
+      w, h,
+      place: (yawCenter, y) => placeStoryBlock(yawCenter, y, w, h, rng),
+    };
+  });
+}
+
+function placeStoryItem(yawCenter, y, w, h, item) {
+  const r = Math.min(w, h) * 0.05;
+  const panelAspect = w / h;
+
+  const mat = new THREE.MeshBasicMaterial({
+    color:       0x1a1610,                          // dark while loading
+    side:        THREE.DoubleSide,
+    alphaMap:    buildRoundedAlphaTexture(w, h, r),
+    transparent: true,
+    opacity:     0,
+    depthWrite:  false,
+  });
+
+  if (item.t === 'video') applyCoverVideo(mat, item.u, panelAspect);
+  else                    applyCoverImage(mat, item.u, panelAspect);
+
+  const mesh = new THREE.Mesh(buildCurvedPanelGeometry(w, h, RADIUS), mat);
+  mesh.position.set(
+     RADIUS * Math.sin(yawCenter),
+     y,
+    -RADIUS * Math.cos(yawCenter),
+  );
+  mesh.lookAt(0, y, 0);
+  mesh.userData.targetOpacity = 0;
+  storyGroup.add(mesh);
 }
 
 const hudEl = document.querySelector('.hud');
@@ -796,6 +969,14 @@ function exitStory() {
     while (storyGroup.children.length) {
       const m = storyGroup.children.pop();
       m.geometry?.dispose();
+      const v = m.material.userData?.videoEl;
+      if (v) {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+        v.remove();
+      }
+      m.material.map?.dispose();
       m.material.alphaMap?.dispose();
       m.material.dispose();
     }
