@@ -726,29 +726,29 @@ const STORY_SIZE_PRESETS = [
   { w: 240, h: 340 },
 ];
 
-/* Target panel areas (world units²) for real-content panels. Each
-   photo picks one of these at random; the derived width/height
-   then follows the item's aspect ratio. The cover is 370 × 305 =
-   ~113 000, so photos are always smaller than the cover. */
-const STORY_PHOTO_AREAS = [
-  18000,    // small
-  26000,    // medium
-  38000,    // large
-  54000,    // 2-row hero
-];
+/* Deterministic slot grid for a story page.
+   The cluster is laid out as 3 rows arranged "down" from a top-row
+   cover (or "up" from a bottom-row cover):
 
-/* Videos are always the biggest media block: roughly the same area
-   as the cover (slightly bigger so they read as the heroes of the
-   story), with width / height derived from each video's aspect. */
-const VIDEO_TARGET_AREA = 125000;     // cover area is ~113 000
+     Cover row : COVER + 2 hero video slots (one each side)
+     Row 1     : 4 photo slots + 1 hero video slot (centre)
+     Row 2     : 7 photo slots
 
-/* Minimum angular separation between video panels, measured around
-   the cover as polar angle. 2 videos sit roughly opposite; 3 videos
-   spread into thirds. Without this they clump on the same side. */
-function videoMinSeparation(videoCount) {
-  if (videoCount >= 3) return Math.PI / 3;        // 60°
-  return Math.PI * 0.55;                          // ≈ 99°
-}
+   = 14 slots total, exactly matching the 11 photos + 3 videos of
+   the typical batch. Gap between any two adjacent slots — both
+   horizontally and vertically — is HGAP (14 world units), matching
+   the cover-to-cover spacing on the home page. The two cover-row
+   videos sit at polar angles 0 / π around the cover; the row-1
+   centre video sits at ±π/2 — so all three videos are on
+   different sides by construction. */
+const STORY_SLOT_DIMS = {
+  coverVideo: { w: 460, h: 305 },     // cover-row video (matches cover height)
+  row1Video:  { w: 360, h: 200 },     // row-1 centre video
+  row1Photo:  { w: 270, h: 200 },     // row-1 photo
+  row2Photo:  { w: 200, h: 122 },     // row-2 photo
+};
+const ROW1_H = STORY_SLOT_DIMS.row1Photo.h;
+const ROW2_H = STORY_SLOT_DIMS.row2Photo.h;
 
 /* Shared cluster parameters used by both the manifest path and the
    gray-placeholder fallback. */
@@ -850,78 +850,115 @@ function clusterPlace(idx, targetCount, makeNextCandidate) {
   return placedCount;
 }
 
-function buildStoryFromItems(idx, items) {
-  const rand = mulberry32(idx + 1);
+/* Returns 14 fixed slots laid out around the cover with uniform
+   HGAP gaps, tagged with `bigVideoSlot: true` on the three slots
+   intended to hold videos. Mirrors vertically for bottom-row
+   covers so the cluster always extends AWAY from the dome edge. */
+function getStorySlots(idx) {
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const yawC   = THREE.MathUtils.degToRad(yawCDeg);
+  const isTop  = yC > 0;
+  const yDir   = isTop ? -1 : 1;                  // direction rows extend
 
-  // Split into videos and photos. Videos are placed FIRST so they
-  // get prime real estate around the cover (and so their separation
-  // constraint is easier to satisfy in an otherwise empty cluster).
+  // Y centres for rows: row 1 sits HGAP beyond the cover edge, row 2
+  // sits HGAP beyond row 1. yDir flips sign for bottom-row covers.
+  const coverFarEdge = yC + yDir * hC / 2;        // y of cover edge furthest from 0
+  const row1Edge     = coverFarEdge + yDir * HGAP;
+  const row1Y        = row1Edge + yDir * ROW1_H / 2;
+  const row1FarEdge  = row1Y + yDir * ROW1_H / 2;
+  const row2Edge     = row1FarEdge + yDir * HGAP;
+  const row2Y        = row2Edge + yDir * ROW2_H / 2;
+
+  const slots = [];
+
+  // ---- Cover row: two hero video slots flanking the cover ----
+  const cv = STORY_SLOT_DIMS.coverVideo;
+  const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
+  slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, bigVideoSlot: true });
+  slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, bigVideoSlot: true });
+
+  // ---- Row 1: 4 photo slots + 1 video slot (centre) ----
+  const r1v = STORY_SLOT_DIMS.row1Video;
+  const r1p = STORY_SLOT_DIMS.row1Photo;
+  const r1Widths = [r1p.w, r1p.w, r1v.w, r1p.w, r1p.w];   // centre is video
+  const r1Total  = r1Widths.reduce((s, w) => s + w, 0) + (r1Widths.length - 1) * HGAP;
+  let cursor = -r1Total / 2;
+  for (let i = 0; i < r1Widths.length; i++) {
+    const w = r1Widths[i];
+    slots.push({
+      yaw: yawC + (cursor + w / 2) / RADIUS,
+      y:   row1Y,
+      w,
+      h:   ROW1_H,
+      bigVideoSlot: i === 2,
+    });
+    cursor += w + HGAP;
+  }
+
+  // ---- Row 2: 7 photo slots ----
+  const r2p = STORY_SLOT_DIMS.row2Photo;
+  const r2Total = 7 * r2p.w + 6 * HGAP;
+  cursor = -r2Total / 2;
+  for (let i = 0; i < 7; i++) {
+    slots.push({
+      yaw: yawC + (cursor + r2p.w / 2) / RADIUS,
+      y:   row2Y,
+      w:   r2p.w,
+      h:   ROW2_H,
+      bigVideoSlot: false,
+    });
+    cursor += r2p.w + HGAP;
+  }
+
+  return slots;
+}
+
+function buildStoryFromItems(idx, items) {
+  const slots  = getStorySlots(idx);
   const videos = items.filter(it => it.t === 'video');
   const photos = items.filter(it => it.t === 'image');
 
-  // Shuffle photos for per-re-entry variety; videos keep manifest
-  // order so the placement spread is deterministic relative to the
-  // first video chosen.
+  // Deterministic-but-fresh shuffle of photos so the same cover
+  // always sees the same arrangement on re-entry but different
+  // covers feel distinct.
+  const rand = mulberry32(idx + 1);
   const shuffledPhotos = photos.slice();
   for (let i = shuffledPhotos.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [shuffledPhotos[i], shuffledPhotos[j]] = [shuffledPhotos[j], shuffledPhotos[i]];
   }
 
-  // Pull cover position out so the video angular-separation check
-  // can compute polar angle around the cover, not the world origin.
-  const [yawCDeg, yC] = PANEL_LAYOUT[idx];
-  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  // Split slot indices by category, then assign.
+  const bigSlotIdx   = [];
+  const smallSlotIdx = [];
+  slots.forEach((s, i) => (s.bigVideoSlot ? bigSlotIdx : smallSlotIdx).push(i));
 
-  const placedVideoAngles = [];                    // polar angle around cover
-  const minSep = videoMinSeparation(videos.length);
+  const assignment = new Array(slots.length).fill(null);
+  // Videos → big slots, in order
+  for (let i = 0; i < videos.length && i < bigSlotIdx.length; i++) {
+    assignment[bigSlotIdx[i]] = videos[i];
+  }
+  // Any big slots left over (e.g. only 2 videos but 3 big slots)
+  // get treated as photo slots so we don't leave them empty.
+  const photoQueue = shuffledPhotos.slice();
+  for (const idx2 of bigSlotIdx) {
+    if (assignment[idx2] !== null) continue;
+    if (!photoQueue.length) break;
+    assignment[idx2] = photoQueue.shift();
+  }
+  // Photos → remaining small slots, in shuffled order
+  for (const idx2 of smallSlotIdx) {
+    if (!photoQueue.length) break;
+    assignment[idx2] = photoQueue.shift();
+  }
 
-  let videoIdx = 0;
-  let photoIdx = 0;
-
-  clusterPlace(idx, videos.length + shuffledPhotos.length, (rng) => {
-    // Phase 1: videos
-    if (videoIdx < videos.length) {
-      const item = videos[videoIdx];
-      videoIdx++;
-      const w = Math.round(Math.sqrt(VIDEO_TARGET_AREA * item.a));
-      const h = Math.round(Math.sqrt(VIDEO_TARGET_AREA / item.a));
-      return {
-        w, h,
-        validate: (yawCenter, y) => {
-          // Polar angle of this candidate around the cover, treating
-          // yaw as horizontal arc length so x and y are commensurate.
-          const dx = (yawCenter - yawC) * RADIUS;
-          const dy = (y - yC);
-          const angle = Math.atan2(dy, dx);
-          return placedVideoAngles.every(a => {
-            let d = Math.abs(angle - a);
-            if (d > Math.PI) d = 2 * Math.PI - d;
-            return d >= minSep;
-          });
-        },
-        place: (yawCenter, y) => {
-          const dx = (yawCenter - yawC) * RADIUS;
-          const dy = (y - yC);
-          placedVideoAngles.push(Math.atan2(dy, dx));
-          placeStoryItem(yawCenter, y, w, h, item);
-        },
-      };
-    }
-    // Phase 2: photos, sized at a random preset
-    if (photoIdx < shuffledPhotos.length) {
-      const item = shuffledPhotos[photoIdx];
-      photoIdx++;
-      const area = STORY_PHOTO_AREAS[Math.floor(rng() * STORY_PHOTO_AREAS.length)];
-      const w = Math.round(Math.sqrt(area * item.a));
-      const h = Math.round(Math.sqrt(area / item.a));
-      return {
-        w, h,
-        place: (yawCenter, y) => placeStoryItem(yawCenter, y, w, h, item),
-      };
-    }
-    return null;
-  });
+  // Drop the meshes into the scene at their fixed slot positions.
+  for (let i = 0; i < slots.length; i++) {
+    const item = assignment[i];
+    if (!item) continue;
+    const s = slots[i];
+    placeStoryItem(s.yaw, s.y, s.w, s.h, item);
+  }
 }
 
 function buildStoryPlaceholders(idx) {
