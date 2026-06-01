@@ -724,6 +724,23 @@ const STORIES = {
     { t: 'video', u: 'media/story-02/v01.mp4', a: 1.778 },      // landscape cover-row slot
     { t: 'video', u: 'media/story-02/v02.mp4', a: 0.5625 },     // 720×1280 portrait
   ],
+  // cover-03 — High school. 4 wide videos + 8 photos. IMG_4239
+  // was filmed sideways; the encode rotates it 90° CW so v03 is
+  // landscape 16:9 with subjects upright.
+  2: [
+    { t: 'image', u: 'media/story-03/p01.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-03/p02.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-03/p03.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-03/p04.jpg', a: 1.083 },       // near-square
+    { t: 'image', u: 'media/story-03/p05.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-03/p06.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-03/p07.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-03/p08.jpg', a: 1.778 },       // 16:9
+    { t: 'video', u: 'media/story-03/v01.mp4', a: 1.778 },
+    { t: 'video', u: 'media/story-03/v02.mp4', a: 1.333 },       // 4:3 source
+    { t: 'video', u: 'media/story-03/v03.mp4', a: 1.778 },       // rotated 90° CW
+    { t: 'video', u: 'media/story-03/v04.mp4', a: 1.778 },
+  ],
 };
 
 /* ~STORY_BLOCK_COUNT gray placeholder panels — only used as the
@@ -1158,11 +1175,16 @@ function buildStoryFromItems(idx, items) {
   for (let i = 0; i < tallVideos.length && i < tallIdx.length; i++) {
     assignment[tallIdx[i]] = tallVideos[i];
   }
-  // Wide videos → wide slots.
-  for (let i = 0; i < wideVideos.length && i < wideIdx.length; i++) {
-    assignment[wideIdx[i]] = wideVideos[i];
+  // Wide videos → wide slots first; overflow falls back to photo
+  // slots so a story with 4 wide videos still places all four (the
+  // 4th displays smaller, cover-cropped to the photo slot's aspect).
+  const wideQueue = wideVideos.slice();
+  for (const sIdx of [...wideIdx, ...photoIdx]) {
+    if (assignment[sIdx] !== null) continue;
+    if (!wideQueue.length) break;
+    assignment[sIdx] = wideQueue.shift();
   }
-  // Photos fill any unused wide slots, then the photo slots.
+  // Photos fill any remaining slots, in shuffled order.
   const photoQueue = shuffledPhotos.slice();
   for (const sIdx of [...wideIdx, ...photoIdx]) {
     if (assignment[sIdx] !== null) continue;
