@@ -741,6 +741,21 @@ const STORIES = {
     { t: 'video', u: 'media/story-03/v03.mp4', a: 1.778 },       // rotated 90° CW
     { t: 'video', u: 'media/story-03/v04.mp4', a: 1.778 },
   ],
+  // cover-04 — Canary Sand. 7 portrait photos + 2 landscape + 2 wide
+  // videos. The portrait majority routes to a portrait-heavy layout.
+  3: [
+    { t: 'image', u: 'media/story-04/p01.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-04/p02.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-04/p03.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-04/p04.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-04/p05.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-04/p06.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-04/p07.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-04/p08.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-04/p09.jpg', a: 0.562 },
+    { t: 'video', u: 'media/story-04/v01.mp4', a: 1.778 },
+    { t: 'video', u: 'media/story-04/v02.mp4', a: 1.778 },
+  ],
 };
 
 /* ~STORY_BLOCK_COUNT gray placeholder panels — only used as the
@@ -1131,14 +1146,85 @@ function getMixedSlots(idx, items) {
   return slots;
 }
 
-/* Dispatcher: picks the correct slot template for the story's mix. */
-function getStorySlots(idx, items) {
-  const tallCount = items.filter(it => it.t === 'video' && it.a < 1).length;
-  const wideCount = items.filter(it => it.t === 'video' && it.a >= 1).length;
-  const photoCount = items.filter(it => it.t === 'image').length;
+/* Slot template for portrait-heavy stories (e.g. 7 portrait photos +
+   2 landscape + 2 wide videos). Cover row uses the standard 2 hero
+   video slots. Row 1 becomes a single wide mixed row of slots at
+   h=200, with landscape photos pinned to the EDGES and portrait
+   slots packed in the middle so each portrait source goes into a
+   portrait-shaped cell. Row 2 is unused — empty cylinder skin shows
+   below row 1, which is fine because all media slots are above. */
+function getPortraitHeavySlots(idx, items) {
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  const yDir = yC > 0 ? -1 : 1;
 
-  if (tallCount === 0)                          return getStandardSlots(idx, items.length);
-  if (tallCount >= 1 && wideCount === 0)        return getTallVideoSlots(idx, tallCount, photoCount);
+  const wideCount      = items.filter(it => it.t === 'video' && it.a >= 1).length;
+  const portraitCount  = items.filter(it => it.t === 'image' && it.a <  1).length;
+  const landscapeCount = items.filter(it => it.t === 'image' && it.a >= 1).length;
+
+  const slots = [];
+
+  // Cover row: 2 hero video slots flanking the cover.
+  const cv = STORY_SLOT_DIMS.coverVideo;
+  const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
+  if (wideCount >= 1) slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide' });
+  if (wideCount >= 2) slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide' });
+
+  // Row 1 y position (just below the cover row).
+  const coverFarEdgeY = yC + yDir * hC / 2;
+  const ROW_H = 200;
+  const rowY = coverFarEdgeY + yDir * (HGAP + ROW_H / 2);
+
+  // Build row widths + per-slot role.
+  //   [landscape] [portrait]*N [landscape]   (landscape pinned to edges)
+  // Portrait slots are 113×200 (aspect 0.565), matching 9:16 sources.
+  // Landscape slots are 280×200 (aspect 1.40) — slight horizontal crop
+  // on 16:9 sources but still clearly landscape-shaped.
+  const PORTRAIT_W  = 113;
+  const LANDSCAPE_W = 280;
+  const widths = [];
+  const roles  = [];
+  let landsLeft  = landscapeCount;
+  let landsRight = 0;
+  if (landsLeft >= 2) { landsLeft--; landsRight++; }   // split evenly: 1 each side
+  for (let i = 0; i < landsLeft; i++)  { widths.push(LANDSCAPE_W); roles.push('photo'); }
+  for (let i = 0; i < portraitCount; i++) { widths.push(PORTRAIT_W); roles.push('portrait'); }
+  for (let i = 0; i < landsRight; i++) { widths.push(LANDSCAPE_W); roles.push('photo'); }
+
+  const totalW = widths.reduce((s, w) => s + w, 0) + (widths.length - 1) * HGAP;
+  let cursor = -totalW / 2;
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i];
+    slots.push({
+      yaw: yawC + (cursor + w / 2) / RADIUS,
+      y:   rowY,
+      w,
+      h:   ROW_H,
+      role: roles[i],
+    });
+    cursor += w + HGAP;
+  }
+
+  return slots;
+}
+
+/* Dispatcher: picks the correct slot template for the story's mix.
+   - `portraitCount >= 3` + no tall videos → portrait-heavy template
+     (Canary Sand). The 3-portrait threshold keeps Nathan-style
+     stories (1 incidental portrait) on the standard template.
+   - any tall video + no wide  → all-tall template (Utah-style if both
+     videos were portrait).
+   - tall + wide                → mixed template (Utah).
+   - default                    → standard (Nathan, Highschool). */
+function getStorySlots(idx, items) {
+  const tallCount     = items.filter(it => it.t === 'video' && it.a < 1).length;
+  const wideCount     = items.filter(it => it.t === 'video' && it.a >= 1).length;
+  const photoCount    = items.filter(it => it.t === 'image').length;
+  const portraitCount = items.filter(it => it.t === 'image' && it.a < 1).length;
+
+  if (tallCount === 0 && portraitCount >= 3) return getPortraitHeavySlots(idx, items);
+  if (tallCount === 0)                       return getStandardSlots(idx, items.length);
+  if (tallCount >= 1 && wideCount === 0)     return getTallVideoSlots(idx, tallCount, photoCount);
   return getMixedSlots(idx, items);
 }
 
@@ -1160,13 +1246,15 @@ function buildStoryFromItems(idx, items) {
   }
 
   // Bucket slot indices by role.
-  const tallIdx  = [];
-  const wideIdx  = [];
-  const photoIdx = [];
+  const tallIdx     = [];
+  const wideIdx     = [];
+  const portraitIdx = [];
+  const photoIdx    = [];
   slots.forEach((s, i) => {
-    if (s.role === 'tall')      tallIdx.push(i);
-    else if (s.role === 'wide') wideIdx.push(i);
-    else                        photoIdx.push(i);
+    if (s.role === 'tall')          tallIdx.push(i);
+    else if (s.role === 'wide')     wideIdx.push(i);
+    else if (s.role === 'portrait') portraitIdx.push(i);
+    else                            photoIdx.push(i);
   });
 
   const assignment = new Array(slots.length).fill(null);
@@ -1176,17 +1264,25 @@ function buildStoryFromItems(idx, items) {
     assignment[tallIdx[i]] = tallVideos[i];
   }
   // Wide videos → wide slots first; overflow falls back to photo
-  // slots so a story with 4 wide videos still places all four (the
-  // 4th displays smaller, cover-cropped to the photo slot's aspect).
+  // slots so a story with 4 wide videos still places all four.
   const wideQueue = wideVideos.slice();
   for (const sIdx of [...wideIdx, ...photoIdx]) {
     if (assignment[sIdx] !== null) continue;
     if (!wideQueue.length) break;
     assignment[sIdx] = wideQueue.shift();
   }
-  // Photos fill any remaining slots, in shuffled order.
-  const photoQueue = shuffledPhotos.slice();
-  for (const sIdx of [...wideIdx, ...photoIdx]) {
+  // Portrait photos → portrait slots first so source aspect matches
+  // slot aspect. Landscape photos and any portrait overflow then
+  // fill the remaining (square-ish or landscape) slots.
+  const portraitPhotos  = shuffledPhotos.filter(p => p.a <  1);
+  const landscapePhotos = shuffledPhotos.filter(p => p.a >= 1);
+  const portraitQueue   = portraitPhotos.slice();
+  for (const sIdx of portraitIdx) {
+    if (!portraitQueue.length) break;
+    assignment[sIdx] = portraitQueue.shift();
+  }
+  const photoQueue = [...landscapePhotos, ...portraitQueue];
+  for (const sIdx of [...wideIdx, ...portraitIdx, ...photoIdx]) {
     if (assignment[sIdx] !== null) continue;
     if (!photoQueue.length) break;
     assignment[sIdx] = photoQueue.shift();
