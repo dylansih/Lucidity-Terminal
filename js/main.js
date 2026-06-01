@@ -707,6 +707,23 @@ const STORIES = {
     { t: 'video', u: 'media/story-01/v02.mp4', a: 1.778 },
     { t: 'video', u: 'media/story-01/v03.mp4', a: 1.778 },
   ],
+  // cover-02 — Utah. Both videos were filmed vertically; manifest
+  // keeps their native portrait aspect so they render as tall slots
+  // spanning two rows.
+  1: [
+    { t: 'image', u: 'media/story-02/p01.jpg', a: 1.500 },
+    { t: 'image', u: 'media/story-02/p02.jpg', a: 1.501 },
+    { t: 'image', u: 'media/story-02/p03.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p04.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p05.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p06.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p07.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p08.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p09.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-02/p10.jpg', a: 1.333 },
+    { t: 'video', u: 'media/story-02/v01.mp4', a: 1.778 },      // landscape cover-row slot
+    { t: 'video', u: 'media/story-02/v02.mp4', a: 0.5625 },     // 720×1280 portrait
+  ],
 };
 
 /* ~STORY_BLOCK_COUNT gray placeholder panels — only used as the
@@ -746,9 +763,15 @@ const STORY_SLOT_DIMS = {
   row1Video:  { w: 360, h: 200 },     // row-1 centre video
   row1Photo:  { w: 270, h: 200 },     // row-1 photo
   row2Photo:  { w: 200, h: 122 },     // row-2 photo
+  // Tall vertical-video slot. Spans both rows + the gap between them
+  // (200 + 14 + 122 = 336). Width derives from the source aspect so
+  // the video isn't horizontally cropped. Sized for ~9:16 sources;
+  // very different aspects will still render with cover-crop.
+  tallVideo:  { w: 189, h: 336 },     // 0.5625 aspect, top-aligned with row1
 };
 const ROW1_H = STORY_SLOT_DIMS.row1Photo.h;
 const ROW2_H = STORY_SLOT_DIMS.row2Photo.h;
+const TALL_H = STORY_SLOT_DIMS.tallVideo.h;
 
 /* Shared cluster parameters used by both the manifest path and the
    gray-placeholder fallback. */
@@ -850,73 +873,264 @@ function clusterPlace(idx, targetCount, makeNextCandidate) {
   return placedCount;
 }
 
-/* Returns 14 fixed slots laid out around the cover with uniform
-   HGAP gaps, tagged with `bigVideoSlot: true` on the three slots
-   intended to hold videos. Mirrors vertically for bottom-row
-   covers so the cluster always extends AWAY from the dome edge. */
-function getStorySlots(idx) {
-  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
-  const yawC   = THREE.MathUtils.degToRad(yawCDeg);
-  const isTop  = yC > 0;
-  const yDir   = isTop ? -1 : 1;                  // direction rows extend
+/* Row-2 width tier: more photos in the row → thinner slots so the
+   row stays within the cluster's yaw extent. */
+function row2SlotWidth(count) {
+  if (count <= 5) return 270;
+  if (count === 6) return 230;
+  return 200;
+}
 
-  // Y centres for rows: row 1 sits HGAP beyond the cover edge, row 2
-  // sits HGAP beyond row 1. yDir flips sign for bottom-row covers.
-  const coverFarEdge = yC + yDir * hC / 2;        // y of cover edge furthest from 0
+/* Geometry shared by every layout: y centres for rows 1 and 2 relative
+   to the cover. Mirrored for bottom-row covers so the cluster always
+   extends AWAY from the dome edge. */
+function getStoryRowGeometry(idx) {
+  const [, yC, , hC] = PANEL_LAYOUT[idx];
+  const yDir = yC > 0 ? -1 : 1;
+  const coverFarEdge = yC + yDir * hC / 2;
   const row1Edge     = coverFarEdge + yDir * HGAP;
   const row1Y        = row1Edge + yDir * ROW1_H / 2;
   const row1FarEdge  = row1Y + yDir * ROW1_H / 2;
   const row2Edge     = row1FarEdge + yDir * HGAP;
   const row2Y        = row2Edge + yDir * ROW2_H / 2;
+  // Tall slot covers the full vertical span of row 1 + gap + row 2.
+  // Its centre is the midpoint between row 1 top and row 2 bottom.
+  const tallTopY    = row1Edge;
+  const tallBotY    = row2Y + yDir * ROW2_H / 2;
+  const tallY       = (tallTopY + tallBotY) / 2;
+  return { row1Y, row2Y, tallY };
+}
+
+/* Slot template when there are NO vertical videos — original 3-row
+   grid: cover row (2 hero slots) + row 1 (5) + row 2 (count − 7). */
+function getStandardSlots(idx, itemCount) {
+  const [yawCDeg, yC, wC] = PANEL_LAYOUT[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  const { row1Y, row2Y } = getStoryRowGeometry(idx);
+
+  const COVER_COUNT = Math.min(2, itemCount);
+  const ROW1_COUNT  = Math.min(5, Math.max(0, itemCount - COVER_COUNT));
+  const ROW2_COUNT  = Math.max(0, itemCount - COVER_COUNT - ROW1_COUNT);
 
   const slots = [];
 
-  // ---- Cover row: two hero video slots flanking the cover ----
   const cv = STORY_SLOT_DIMS.coverVideo;
   const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
-  slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, bigVideoSlot: true });
-  slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, bigVideoSlot: true });
+  if (COVER_COUNT >= 1) slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide' });
+  if (COVER_COUNT >= 2) slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide' });
 
-  // ---- Row 1: 4 photo slots + 1 video slot (centre) ----
-  const r1v = STORY_SLOT_DIMS.row1Video;
-  const r1p = STORY_SLOT_DIMS.row1Photo;
-  const r1Widths = [r1p.w, r1p.w, r1v.w, r1p.w, r1p.w];   // centre is video
-  const r1Total  = r1Widths.reduce((s, w) => s + w, 0) + (r1Widths.length - 1) * HGAP;
-  let cursor = -r1Total / 2;
-  for (let i = 0; i < r1Widths.length; i++) {
-    const w = r1Widths[i];
-    slots.push({
-      yaw: yawC + (cursor + w / 2) / RADIUS,
-      y:   row1Y,
-      w,
-      h:   ROW1_H,
-      bigVideoSlot: i === 2,
-    });
-    cursor += w + HGAP;
+  if (ROW1_COUNT > 0) {
+    const r1v = STORY_SLOT_DIMS.row1Video;
+    const r1p = STORY_SLOT_DIMS.row1Photo;
+    const centreIdx = Math.floor(ROW1_COUNT / 2);
+    const r1Widths = [];
+    for (let i = 0; i < ROW1_COUNT; i++) r1Widths.push(i === centreIdx ? r1v.w : r1p.w);
+    const r1Total = r1Widths.reduce((s, w) => s + w, 0) + (r1Widths.length - 1) * HGAP;
+    let cursor = -r1Total / 2;
+    for (let i = 0; i < ROW1_COUNT; i++) {
+      const w = r1Widths[i];
+      slots.push({
+        yaw: yawC + (cursor + w / 2) / RADIUS,
+        y:   row1Y,
+        w,
+        h:   ROW1_H,
+        role: i === centreIdx ? 'wide' : 'photo',
+      });
+      cursor += w + HGAP;
+    }
   }
 
-  // ---- Row 2: 7 photo slots ----
-  const r2p = STORY_SLOT_DIMS.row2Photo;
-  const r2Total = 7 * r2p.w + 6 * HGAP;
-  cursor = -r2Total / 2;
-  for (let i = 0; i < 7; i++) {
-    slots.push({
-      yaw: yawC + (cursor + r2p.w / 2) / RADIUS,
-      y:   row2Y,
-      w:   r2p.w,
-      h:   ROW2_H,
-      bigVideoSlot: false,
-    });
-    cursor += r2p.w + HGAP;
+  if (ROW2_COUNT > 0) {
+    const r2w = row2SlotWidth(ROW2_COUNT);
+    const r2Total = ROW2_COUNT * r2w + (ROW2_COUNT - 1) * HGAP;
+    let cursor = -r2Total / 2;
+    for (let i = 0; i < ROW2_COUNT; i++) {
+      slots.push({
+        yaw: yawC + (cursor + r2w / 2) / RADIUS,
+        y:   row2Y,
+        w:   r2w,
+        h:   ROW2_H,
+        role: 'photo',
+      });
+      cursor += r2w + HGAP;
+    }
   }
 
   return slots;
 }
 
+/* Slot template when the manifest contains vertical (portrait) videos.
+   - 1–2 tall slots sit at the far yaw edges of the cluster, spanning
+     row 1 + gap + row 2 vertically so a 9:16 source isn't cropped.
+   - Row 1 and Row 2 photos sit BETWEEN the tall slots (so their yaw
+     range is compressed compared to the standard layout).
+   - There are no cover-row lateral slots when there are no wide
+     videos to put in them.
+   Designed for the common case of 1–2 tall videos + lots of photos. */
+function getTallVideoSlots(idx, tallCount, photoCount) {
+  const [yawCDeg, yC, wC] = PANEL_LAYOUT[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  const { row1Y, row2Y, tallY } = getStoryRowGeometry(idx);
+
+  const tv = STORY_SLOT_DIMS.tallVideo;
+  // Position tall slots near (but not at) the cluster edge. Outer
+  // edge of tall slot is at ±EDGE_YAW; inner edge sets the start
+  // of the row 1 / row 2 yaw window.
+  const EDGE_YAW = 1.5;                              // ≈ ±86°
+  const tallCentreYawOff = EDGE_YAW - (tv.w / 2) / RADIUS;
+  const tallInnerYawOff  = tallCentreYawOff - (tv.w / 2) / RADIUS;
+
+  // Row 1 / Row 2 yaw range: between the inner edges of the tall
+  // slots, with HGAP cushion on each side.
+  const innerHalfYaw = tallInnerYawOff - HGAP / RADIUS;
+  const rowWorldWidth = innerHalfYaw * 2 * RADIUS;
+
+  const slots = [];
+
+  // ---- Tall slots ----
+  if (tallCount >= 1) slots.push({ yaw: yawC - tallCentreYawOff, y: tallY, w: tv.w, h: tv.h, role: 'tall' });
+  if (tallCount >= 2) slots.push({ yaw: yawC + tallCentreYawOff, y: tallY, w: tv.w, h: tv.h, role: 'tall' });
+
+  // Photos split between row 1 and row 2 as evenly as possible, with
+  // any odd one going to row 1 (closer to the cover, reads first).
+  const PHOTO_BUDGET = photoCount;
+  const ROW1_COUNT   = Math.ceil(PHOTO_BUDGET / 2);
+  const ROW2_COUNT   = PHOTO_BUDGET - ROW1_COUNT;
+
+  // Row 1 / Row 2 slot widths sized so the row fills the available
+  // width snugly, keeping HGAP gaps between slots.
+  function fillRow(count, y, h, slotsOut) {
+    if (count <= 0) return;
+    const w = Math.floor((rowWorldWidth - (count - 1) * HGAP) / count);
+    let cursor = -((count * w + (count - 1) * HGAP) / 2);
+    for (let i = 0; i < count; i++) {
+      slotsOut.push({
+        yaw: yawC + (cursor + w / 2) / RADIUS,
+        y,
+        w,
+        h,
+        role: 'photo',
+      });
+      cursor += w + HGAP;
+    }
+  }
+  fillRow(ROW1_COUNT, row1Y, ROW1_H, slots);
+  fillRow(ROW2_COUNT, row2Y, ROW2_H, slots);
+
+  return slots;
+}
+
+/* Slot template for a mix of 1 tall video + N wide videos + photos.
+   - Cover-row wide slot at the LEFT of the cover (v01 here).
+   - Tall slot IMMEDIATELY RIGHT of the cover, sized to span the full
+     vertical reach of the cluster (cover row + gap + row 1 + gap +
+     row 2). With 9:16 source this is ~368 × 655. The video reads as
+     a hero block right next to the cover.
+   - Photos fill the wide LEFT segment (yaw [−1.55, cover right edge])
+     across rows 1 and 2, plus a narrow RIGHT column at row 2 next to
+     the tall slot. The narrow column is row 2 only because at row 1
+     height the aspect would be too portrait for the landscape photos.
+   Designed for 1 wide + 1 tall + ~10 photo (Utah). */
+function getMixedSlots(idx, items) {
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  const yDir = yC > 0 ? -1 : 1;
+  const { row1Y, row2Y } = getStoryRowGeometry(idx);
+  const HGAP_ARC = HGAP / RADIUS;
+
+  const wideCount  = items.filter(it => it.t === 'video' && it.a >= 1).length;
+  const tallCount  = items.filter(it => it.t === 'video' && it.a < 1).length;
+  const photoCount = items.filter(it => it.t === 'image').length;
+
+  const slots = [];
+
+  // ---- Tall slot: sized to span all three rows (cover-row top → row 2 bottom). ----
+  const coverFarEdgeY  = yC - yDir * hC / 2;
+  const row2FarEdgeY   = row2Y + yDir * ROW2_H / 2;
+  const tallY          = (coverFarEdgeY + row2FarEdgeY) / 2;
+  const tallH          = Math.abs(coverFarEdgeY - row2FarEdgeY);
+  const TALL_ASPECT    = 0.5625;                          // 9:16
+  const tallW          = Math.round(tallH * TALL_ASPECT);
+  const tallYawDelta   = (wC / 2 + HGAP + tallW / 2) / RADIUS;   // right-adjacent to cover
+  const tallLeftYawOff  = tallYawDelta - (tallW / 2) / RADIUS;
+  const tallRightYawOff = tallYawDelta + (tallW / 2) / RADIUS;
+  if (tallCount >= 1) {
+    slots.push({ yaw: yawC + tallYawDelta, y: tallY, w: tallW, h: tallH, role: 'tall' });
+  }
+
+  // ---- Cover-row wide slot LEFT of the cover (e.g. v01) ----
+  const cv = STORY_SLOT_DIMS.coverVideo;
+  const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
+  if (wideCount >= 1) {
+    slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide' });
+  }
+
+  // ---- Photo rows ----
+  // Photos in rows 1 and 2 extend across the full yaw width that's NOT
+  // blocked by the tall slot. Vertically, rows 1 and 2 are unaffected
+  // by v01 (different y), so the photo rows can sit under both the
+  // cover and v01.
+  const leftRightYawOff = tallLeftYawOff - HGAP_ARC;       // photo row right edge
+  const leftLeftYawOff  = -1.55;                            // photo row left edge
+  const leftWidth       = (leftRightYawOff - leftLeftYawOff) * RADIUS;
+  const leftCentreYaw   = (leftLeftYawOff + leftRightYawOff) / 2;
+
+  const rightLeftYawOff  = tallRightYawOff + HGAP_ARC;
+  const rightRightYawOff = 1.55;
+  const rightWidth       = (rightRightYawOff - rightLeftYawOff) * RADIUS;
+  const rightCentreYaw   = (rightLeftYawOff + rightRightYawOff) / 2;
+
+  /* Place `count` evenly-sized photo slots inside a 1-D yaw segment
+     centred at `centreYawOff`. Uniform widths within a row keep
+     horizontal gaps at exactly HGAP, matching the rest of the cluster. */
+  function fillSegment(count, y, h, segmentWidth, centreYawOff) {
+    if (count <= 0) return;
+    const w = Math.floor((segmentWidth - (count - 1) * HGAP) / count);
+    const totalW = count * w + (count - 1) * HGAP;
+    let cursor = -totalW / 2;
+    for (let i = 0; i < count; i++) {
+      slots.push({
+        yaw: yawC + centreYawOff + (cursor + w / 2) / RADIUS,
+        y, w, h, role: 'photo',
+      });
+      cursor += w + HGAP;
+    }
+  }
+
+  // All photos live in the left segment — a single isolated cell to
+  // the right of the tall slot looks lonely, so everything stays on
+  // the cohesive side. Larger half in row 1 (closer to cover, taller
+  // cells = easier aspect for landscape photos), rest in row 2.
+  // Keep `rightCentreYaw` referenced so the linter doesn't whine —
+  // the right segment is reserved for future stories with portrait
+  // photos that fit there naturally.
+  void rightCentreYaw;
+  const ROW1_LEFT = Math.min(4, photoCount);
+  const ROW2_LEFT = photoCount - ROW1_LEFT;
+
+  fillSegment(ROW1_LEFT, row1Y, ROW1_H, leftWidth, leftCentreYaw);
+  fillSegment(ROW2_LEFT, row2Y, ROW2_H, leftWidth, leftCentreYaw);
+
+  return slots;
+}
+
+/* Dispatcher: picks the correct slot template for the story's mix. */
+function getStorySlots(idx, items) {
+  const tallCount = items.filter(it => it.t === 'video' && it.a < 1).length;
+  const wideCount = items.filter(it => it.t === 'video' && it.a >= 1).length;
+  const photoCount = items.filter(it => it.t === 'image').length;
+
+  if (tallCount === 0)                          return getStandardSlots(idx, items.length);
+  if (tallCount >= 1 && wideCount === 0)        return getTallVideoSlots(idx, tallCount, photoCount);
+  return getMixedSlots(idx, items);
+}
+
 function buildStoryFromItems(idx, items) {
-  const slots  = getStorySlots(idx);
-  const videos = items.filter(it => it.t === 'video');
-  const photos = items.filter(it => it.t === 'image');
+  const slots = getStorySlots(idx, items);
+
+  const wideVideos = items.filter(it => it.t === 'video' && it.a >= 1);
+  const tallVideos = items.filter(it => it.t === 'video' && it.a < 1);
+  const photos     = items.filter(it => it.t === 'image');
 
   // Deterministic-but-fresh shuffle of photos so the same cover
   // always sees the same arrangement on re-entry but different
@@ -928,28 +1142,32 @@ function buildStoryFromItems(idx, items) {
     [shuffledPhotos[i], shuffledPhotos[j]] = [shuffledPhotos[j], shuffledPhotos[i]];
   }
 
-  // Split slot indices by category, then assign.
-  const bigSlotIdx   = [];
-  const smallSlotIdx = [];
-  slots.forEach((s, i) => (s.bigVideoSlot ? bigSlotIdx : smallSlotIdx).push(i));
+  // Bucket slot indices by role.
+  const tallIdx  = [];
+  const wideIdx  = [];
+  const photoIdx = [];
+  slots.forEach((s, i) => {
+    if (s.role === 'tall')      tallIdx.push(i);
+    else if (s.role === 'wide') wideIdx.push(i);
+    else                        photoIdx.push(i);
+  });
 
   const assignment = new Array(slots.length).fill(null);
-  // Videos → big slots, in order
-  for (let i = 0; i < videos.length && i < bigSlotIdx.length; i++) {
-    assignment[bigSlotIdx[i]] = videos[i];
+
+  // Tall videos → tall slots.
+  for (let i = 0; i < tallVideos.length && i < tallIdx.length; i++) {
+    assignment[tallIdx[i]] = tallVideos[i];
   }
-  // Any big slots left over (e.g. only 2 videos but 3 big slots)
-  // get treated as photo slots so we don't leave them empty.
+  // Wide videos → wide slots.
+  for (let i = 0; i < wideVideos.length && i < wideIdx.length; i++) {
+    assignment[wideIdx[i]] = wideVideos[i];
+  }
+  // Photos fill any unused wide slots, then the photo slots.
   const photoQueue = shuffledPhotos.slice();
-  for (const idx2 of bigSlotIdx) {
-    if (assignment[idx2] !== null) continue;
+  for (const sIdx of [...wideIdx, ...photoIdx]) {
+    if (assignment[sIdx] !== null) continue;
     if (!photoQueue.length) break;
-    assignment[idx2] = photoQueue.shift();
-  }
-  // Photos → remaining small slots, in shuffled order
-  for (const idx2 of smallSlotIdx) {
-    if (!photoQueue.length) break;
-    assignment[idx2] = photoQueue.shift();
+    assignment[sIdx] = photoQueue.shift();
   }
 
   // Drop the meshes into the scene at their fixed slot positions.
