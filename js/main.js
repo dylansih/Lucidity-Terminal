@@ -273,6 +273,12 @@ const textureLoader = new THREE.TextureLoader();
 const COVER_Y_PIXEL_OFFSET = {
   'media/cover-05.jpg': 100,
   'media/cover-08.jpg': 100,
+  // Graduation group photo in highschool story. Source aspect is
+  // ~1.08 (almost square) but the row-2 slot is ~2.2 letterbox, so
+  // only the middle band shows by default and the three faces fall
+  // above the crop window. Negative shift slides the visible window
+  // UP in the source to expose the top portion (heads / shoulders).
+  'media/story-03/p04.jpg': -280,
 };
 
 // Loads `url` as a texture and, once the image arrives, configures
@@ -756,6 +762,35 @@ const STORIES = {
     { t: 'video', u: 'media/story-04/v01.mp4', a: 1.778 },
     { t: 'video', u: 'media/story-04/v02.mp4', a: 1.778 },
   ],
+  // cover-05 — Canary Full. 19 photos (9 landscape, 10 portrait) +
+  // 5 videos (1 wide, 4 tall). Routes to the media-heavy template
+  // because itemCount > 16.
+  4: [
+    { t: 'image', u: 'media/story-05/p01.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-05/p02.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p03.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-05/p04.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-05/p05.jpg', a: 1.184 },
+    { t: 'image', u: 'media/story-05/p06.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p07.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p08.jpg', a: 0.750 },
+    { t: 'image', u: 'media/story-05/p09.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p10.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-05/p11.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p12.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-05/p13.jpg', a: 0.750 },
+    { t: 'image', u: 'media/story-05/p14.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-05/p15.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p16.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-05/p17.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-05/p18.jpg', a: 1.777 },
+    { t: 'image', u: 'media/story-05/p19.jpg', a: 0.562 },
+    { t: 'video', u: 'media/story-05/v01.mp4', a: 0.562 },
+    { t: 'video', u: 'media/story-05/v02.mp4', a: 0.562 },
+    { t: 'video', u: 'media/story-05/v03.mp4', a: 0.562 },
+    { t: 'video', u: 'media/story-05/v04.mp4', a: 1.778 },
+    { t: 'video', u: 'media/story-05/v05.mp4', a: 0.562 },
+  ],
 };
 
 /* ~STORY_BLOCK_COUNT gray placeholder panels — only used as the
@@ -1208,20 +1243,143 @@ function getPortraitHeavySlots(idx, items) {
   return slots;
 }
 
+/* Slot template for very large media batches with several tall
+   videos. Tall videos sit at the far yaw edges (2 per side for 4
+   tall, etc.) so they read as heroes; cover row, portrait photos
+   and landscape photos all sit in the cluster middle (the
+   uninterrupted yaw range between the tall-slot pairs). The cluster
+   expands beyond ±90° as needed to fit the tall hero slots without
+   shrinking them. Used for Canary Full (1 wide + 4 tall + 10
+   portrait + 9 landscape = 24 items).
+
+   - Tall hero slot: 309 × 550 (aspect 0.562 — matches 9:16 source).
+     ~70 % the area of Utah's hero tall, plenty bigger than the
+     113 × 200 portraits.
+   - Cover row: cover + wide-video LEFT + landscape-photo RIGHT.
+   - Row 1: uniform 113 × 200 portrait slots in the centre yaw range.
+   - Row 2: landscape photo slots in the centre yaw range, h = 100
+     so source aspect can stay closer to 16:9 with slot width ~155
+     (aspect ~1.55, slight crop on 16:9 sources). */
+function getMediaHeavySlots(idx, items) {
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  const yDir = yC > 0 ? -1 : 1;
+
+  const wideCount      = items.filter(it => it.t === 'video' && it.a >= 1).length;
+  const tallCount      = items.filter(it => it.t === 'video' && it.a <  1).length;
+  const portraitCount  = items.filter(it => it.t === 'image' && it.a <  1).length;
+  const landscapeCount = items.filter(it => it.t === 'image' && it.a >= 1).length;
+
+  const HGAP_ARC = HGAP / RADIUS;
+
+  // Y geometry for the centre rows.
+  // coverNearEdgeY is the cover's edge CLOSER to y=0 (the edge that
+  // faces the rows). For a top-row cover at yC=166 with yDir=-1,
+  // that's the cover's bottom at y=13.5; rows extend downward from
+  // there. Mirror for bottom-row covers.
+  const coverNearEdgeY = yC + yDir * hC / 2;
+  const ROW1_H = 200;
+  const row1Y  = coverNearEdgeY + yDir * (HGAP + ROW1_H / 2);
+  const row1FarEdgeY = row1Y + yDir * ROW1_H / 2;
+  const ROW2_H = 100;                                   // shorter row 2 → better landscape aspect
+  const row2Y  = row1FarEdgeY + yDir * (HGAP + ROW2_H / 2);
+
+  // Tall slot dimensions. Aspect matches typical 9:16 sources so the
+  // video frame is rendered uncropped.
+  const TALL_W = 309;
+  const TALL_H = 550;
+  // Tall slot is aligned with the cover's FAR edge (top for top-row
+  // covers, bottom for bottom-row) so its top reaches as high as the
+  // cover and it then extends down (toward row 2) by TALL_H. Centre
+  // y is FAR edge plus yDir * TALL_H/2 — for top-row: 318.5 + (-1)*275 = 43.5.
+  const coverFarEdgeY = yC - yDir * hC / 2;
+  const tallY = coverFarEdgeY + yDir * TALL_H / 2;
+
+  const slots = [];
+
+  // ---- Cover row: cover + wide v LEFT + landscape photo RIGHT ----
+  const cv = STORY_SLOT_DIMS.coverVideo;
+  const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
+  slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h,
+               role: wideCount >= 1 ? 'wide' : 'photo' });
+  if (landscapeCount >= 1) {
+    slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'photo' });
+  }
+  const coverRowOuterYawOff = coverYawDelta + (cv.w / 2) / RADIUS;
+
+  // ---- Tall slots at far edges ----
+  // Distribute `tallCount` slots between the two sides — floor(N/2)
+  // on the left, ceil(N/2) on the right. Each side stacks slots from
+  // inside (next to cover row) outwards, separated by HGAP.
+  const TALL_HALF_ARC = (TALL_W / 2) / RADIUS;
+  const leftTallCount  = Math.floor(tallCount / 2);
+  const rightTallCount = tallCount - leftTallCount;
+  function placeSideTalls(side, count) {
+    let nextInnerYawOff = coverRowOuterYawOff + HGAP_ARC;
+    for (let i = 0; i < count; i++) {
+      const centreYawOff = nextInnerYawOff + TALL_HALF_ARC;
+      slots.push({
+        yaw: yawC + side * centreYawOff,
+        y:   tallY,
+        w:   TALL_W,
+        h:   TALL_H,
+        role: 'tall',
+      });
+      nextInnerYawOff = centreYawOff + TALL_HALF_ARC + HGAP_ARC;
+    }
+  }
+  placeSideTalls(-1, leftTallCount);
+  placeSideTalls(+1, rightTallCount);
+
+  // ---- Centre photo rows ----
+  // Row 1 and row 2 sit in the cluster's centre yaw range, between
+  // the innermost tall slots' inner edges (with HGAP buffer). That
+  // range is exactly the cover row's yaw extent, so photo rows align
+  // visually under the cover/wide-v/landscape-photo trio.
+  const photoRowYawWidth = 2 * coverRowOuterYawOff * RADIUS;   // world units
+
+  function fillCentreRow(count, y, w, h, role) {
+    if (count <= 0) return;
+    const totalW = count * w + (count - 1) * HGAP;
+    let cursor = -totalW / 2;
+    for (let i = 0; i < count; i++) {
+      slots.push({
+        yaw: yawC + (cursor + w / 2) / RADIUS,
+        y, w, h, role,
+      });
+      cursor += w + HGAP;
+    }
+  }
+
+  // Row 1: 10 portrait slots at uniform tall-shaped dims (113 × 200).
+  const PORTRAIT_W = 113;
+  fillCentreRow(portraitCount, row1Y, PORTRAIT_W, ROW1_H, 'portrait');
+
+  // Row 2: landscape slots. Width chosen so all photos fit in the
+  // centre row width with HGAP gaps.
+  const row2Count = Math.max(0, landscapeCount - (landscapeCount >= 1 ? 1 : 0));
+  if (row2Count > 0) {
+    const row2W = Math.floor((photoRowYawWidth - (row2Count - 1) * HGAP) / row2Count);
+    fillCentreRow(row2Count, row2Y, row2W, ROW2_H, 'photo');
+  }
+
+  return slots;
+}
+
 /* Dispatcher: picks the correct slot template for the story's mix.
-   - `portraitCount >= 3` + no tall videos → portrait-heavy template
-     (Canary Sand). The 3-portrait threshold keeps Nathan-style
-     stories (1 incidental portrait) on the standard template.
-   - any tall video + no wide  → all-tall template (Utah-style if both
-     videos were portrait).
-   - tall + wide                → mixed template (Utah).
-   - default                    → standard (Nathan, Highschool). */
+   - itemCount > 16 → media-heavy template (Canary Full).
+   - `portraitCount >= 3` + no tall → portrait-heavy template
+     (Canary Sand).
+   - any tall + no wide          → all-tall (Utah, if both portrait).
+   - tall + wide                 → mixed template (Utah).
+   - default                     → standard (Nathan, Highschool). */
 function getStorySlots(idx, items) {
-  const tallCount     = items.filter(it => it.t === 'video' && it.a < 1).length;
+  const tallCount     = items.filter(it => it.t === 'video' && it.a <  1).length;
   const wideCount     = items.filter(it => it.t === 'video' && it.a >= 1).length;
   const photoCount    = items.filter(it => it.t === 'image').length;
   const portraitCount = items.filter(it => it.t === 'image' && it.a < 1).length;
 
+  if (items.length > 16)                     return getMediaHeavySlots(idx, items);
   if (tallCount === 0 && portraitCount >= 3) return getPortraitHeavySlots(idx, items);
   if (tallCount === 0)                       return getStandardSlots(idx, items.length);
   if (tallCount >= 1 && wideCount === 0)     return getTallVideoSlots(idx, tallCount, photoCount);
