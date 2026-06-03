@@ -1244,22 +1244,28 @@ function getPortraitHeavySlots(idx, items) {
 }
 
 /* Slot template for very large media batches with several tall
-   videos. Tall videos sit at the far yaw edges (2 per side for 4
-   tall, etc.) so they read as heroes; cover row, portrait photos
-   and landscape photos all sit in the cluster middle (the
-   uninterrupted yaw range between the tall-slot pairs). The cluster
-   expands beyond ±90° as needed to fit the tall hero slots without
-   shrinking them. Used for Canary Full (1 wide + 4 tall + 10
-   portrait + 9 landscape = 24 items).
+   videos. The layout disperses videos and photos across the cluster
+   so they read as one cohesive band (rather than "videos at the
+   edges, photos in the middle"):
 
-   - Tall hero slot: 309 × 550 (aspect 0.562 — matches 9:16 source).
-     ~70 % the area of Utah's hero tall, plenty bigger than the
-     113 × 200 portraits.
-   - Cover row: cover + wide-video LEFT + landscape-photo RIGHT.
-   - Row 1: uniform 113 × 200 portrait slots in the centre yaw range.
-   - Row 2: landscape photo slots in the centre yaw range, h = 100
-     so source aspect can stay closer to 16:9 with slot width ~155
-     (aspect ~1.55, slight crop on 16:9 sources). */
+   - 4 tall video slots distributed across the cluster at predetermined
+     yaw offsets — two on each side of the cover, but with the outer
+     pair pushed further out and the inner pair pulled closer to
+     centre. Tall slots span row 1 + HGAP + row 2 (h = 336).
+   - Cover row: cover + wide-video LEFT + landscape-photo RIGHT
+     (each 460 × 305 hero block).
+   - Three usable photo segments between tall slots: inner-left, centre,
+     inner-right. Each holds row 1 portrait slots AND row 2 landscape
+     slots, so portrait and landscape are visually mixed instead of
+     stacked into separate horizontal bands.
+   - Row 2 landscape widths vary per segment (some segments use 2 wider
+     slots at aspect ~1.5, others use 3 narrower ones at aspect ~0.9)
+     for visual variety — the user explicitly OKed cropping 16:9
+     photos toward 4:3 to fit smaller cells.
+   - With this layout 4 tall slots and ~3 photo segments fit, so a
+     24-item story (1 wide + 4 tall + 10 portrait + 9 landscape)
+     places 23 of them; one portrait gets dropped via the assign
+     queue's natural overflow. */
 function getMediaHeavySlots(idx, items) {
   const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
   const yawC = THREE.MathUtils.degToRad(yawCDeg);
@@ -1267,37 +1273,27 @@ function getMediaHeavySlots(idx, items) {
 
   const wideCount      = items.filter(it => it.t === 'video' && it.a >= 1).length;
   const tallCount      = items.filter(it => it.t === 'video' && it.a <  1).length;
-  const portraitCount  = items.filter(it => it.t === 'image' && it.a <  1).length;
   const landscapeCount = items.filter(it => it.t === 'image' && it.a >= 1).length;
 
   const HGAP_ARC = HGAP / RADIUS;
 
-  // Y geometry for the centre rows.
-  // coverNearEdgeY is the cover's edge CLOSER to y=0 (the edge that
-  // faces the rows). For a top-row cover at yC=166 with yDir=-1,
-  // that's the cover's bottom at y=13.5; rows extend downward from
-  // there. Mirror for bottom-row covers.
+  // Y geometry — coverNearEdgeY is the cover's edge facing the rows.
   const coverNearEdgeY = yC + yDir * hC / 2;
   const ROW1_H = 200;
   const row1Y  = coverNearEdgeY + yDir * (HGAP + ROW1_H / 2);
   const row1FarEdgeY = row1Y + yDir * ROW1_H / 2;
-  const ROW2_H = 100;                                   // shorter row 2 → better landscape aspect
+  const ROW2_H = 122;
   const row2Y  = row1FarEdgeY + yDir * (HGAP + ROW2_H / 2);
 
-  // Tall slot dimensions. Aspect matches typical 9:16 sources so the
-  // video frame is rendered uncropped.
-  const TALL_W = 309;
-  const TALL_H = 550;
-  // Tall slot is aligned with the cover's FAR edge (top for top-row
-  // covers, bottom for bottom-row) so its top reaches as high as the
-  // cover and it then extends down (toward row 2) by TALL_H. Centre
-  // y is FAR edge plus yDir * TALL_H/2 — for top-row: 318.5 + (-1)*275 = 43.5.
-  const coverFarEdgeY = yC - yDir * hC / 2;
-  const tallY = coverFarEdgeY + yDir * TALL_H / 2;
+  // Tall slot: spans row 1 + HGAP + row 2 (h = 336). w follows the
+  // 9:16 source aspect so no horizontal crop.
+  const TALL_W = 189;
+  const TALL_H = ROW1_H + HGAP + ROW2_H;                 // 336
+  const tallY  = coverNearEdgeY + yDir * (HGAP + TALL_H / 2);
 
   const slots = [];
 
-  // ---- Cover row: cover + wide v LEFT + landscape photo RIGHT ----
+  // ---- Cover row ----
   const cv = STORY_SLOT_DIMS.coverVideo;
   const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
   slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h,
@@ -1305,62 +1301,88 @@ function getMediaHeavySlots(idx, items) {
   if (landscapeCount >= 1) {
     slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'photo' });
   }
-  const coverRowOuterYawOff = coverYawDelta + (cv.w / 2) / RADIUS;
 
-  // ---- Tall slots at far edges ----
-  // Distribute `tallCount` slots between the two sides — floor(N/2)
-  // on the left, ceil(N/2) on the right. Each side stacks slots from
-  // inside (next to cover row) outwards, separated by HGAP.
-  const TALL_HALF_ARC = (TALL_W / 2) / RADIUS;
-  const leftTallCount  = Math.floor(tallCount / 2);
-  const rightTallCount = tallCount - leftTallCount;
-  function placeSideTalls(side, count) {
-    let nextInnerYawOff = coverRowOuterYawOff + HGAP_ARC;
-    for (let i = 0; i < count; i++) {
-      const centreYawOff = nextInnerYawOff + TALL_HALF_ARC;
-      slots.push({
-        yaw: yawC + side * centreYawOff,
-        y:   tallY,
-        w:   TALL_W,
-        h:   TALL_H,
-        role: 'tall',
-      });
-      nextInnerYawOff = centreYawOff + TALL_HALF_ARC + HGAP_ARC;
-    }
+  // ---- Tall slots distributed across the cluster ----
+  // For 4 tall: 2 inner near the cover-row laterals, 2 outer near
+  // the cluster edges, all on a slightly extended cluster.
+  // (Other tallCount values fall back to sensible defaults.)
+  let TALL_YAW_OFFS;
+  if (tallCount === 4)      TALL_YAW_OFFS = [-1.85, -0.617, +0.617, +1.85];
+  else if (tallCount === 3) TALL_YAW_OFFS = [-1.4,   0,      +1.4];
+  else if (tallCount === 2) TALL_YAW_OFFS = [-1.0,           +1.0];
+  else if (tallCount === 1) TALL_YAW_OFFS = [                 +1.0];
+  else                      TALL_YAW_OFFS = [];
+
+  const TALL_HALF_YAW = (TALL_W / 2) / RADIUS;
+  for (const yawOff of TALL_YAW_OFFS) {
+    slots.push({ yaw: yawC + yawOff, y: tallY, w: TALL_W, h: TALL_H, role: 'tall' });
   }
-  placeSideTalls(-1, leftTallCount);
-  placeSideTalls(+1, rightTallCount);
 
-  // ---- Centre photo rows ----
-  // Row 1 and row 2 sit in the cluster's centre yaw range, between
-  // the innermost tall slots' inner edges (with HGAP buffer). That
-  // range is exactly the cover row's yaw extent, so photo rows align
-  // visually under the cover/wide-v/landscape-photo trio.
-  const photoRowYawWidth = 2 * coverRowOuterYawOff * RADIUS;   // world units
+  // ---- Compute photo segments between tall slots ----
+  const CLUSTER_HALF = Math.max(2.0,
+    (TALL_YAW_OFFS.length ? Math.abs(TALL_YAW_OFFS[TALL_YAW_OFFS.length - 1]) : 0)
+    + TALL_HALF_YAW + 0.18);                              // outer edge + small buffer
 
-  function fillCentreRow(count, y, w, h, role) {
-    if (count <= 0) return;
-    const totalW = count * w + (count - 1) * HGAP;
+  const sortedTalls = TALL_YAW_OFFS.slice().sort((a, b) => a - b);
+  const blockEdges  = sortedTalls.map(y => [y - TALL_HALF_YAW, y + TALL_HALF_YAW]);
+  const segments    = [];
+  let leftEdge = -CLUSTER_HALF;
+  for (const [bL, bR] of blockEdges) {
+    const segL = leftEdge;
+    const segR = bL - HGAP_ARC;
+    if (segR - segL > 0) segments.push({ yawLeft: segL, yawRight: segR });
+    leftEdge = bR + HGAP_ARC;
+  }
+  if (leftEdge < CLUSTER_HALF) segments.push({ yawLeft: leftEdge, yawRight: CLUSTER_HALF });
+
+  // Only segments wide enough for at least one portrait slot count.
+  const PORTRAIT_W = 113;
+  const MIN_SEG_WIDTH = PORTRAIT_W + HGAP;
+  const usable = segments.filter(s => (s.yawRight - s.yawLeft) * RADIUS >= MIN_SEG_WIDTH);
+
+  // ---- Row 1 portraits (3 per usable segment, centred) ----
+  for (const seg of usable) {
+    const segWidthWorld = (seg.yawRight - seg.yawLeft) * RADIUS;
+    const segCentreYaw  = (seg.yawLeft + seg.yawRight) / 2;
+    const maxCount = Math.floor((segWidthWorld + HGAP) / (PORTRAIT_W + HGAP));
+    const count = Math.min(3, maxCount);
+    if (count <= 0) continue;
+    const totalW = count * PORTRAIT_W + (count - 1) * HGAP;
     let cursor = -totalW / 2;
     for (let i = 0; i < count; i++) {
       slots.push({
-        yaw: yawC + (cursor + w / 2) / RADIUS,
-        y, w, h, role,
+        yaw: yawC + segCentreYaw + (cursor + PORTRAIT_W / 2) / RADIUS,
+        y:   row1Y,
+        w:   PORTRAIT_W,
+        h:   ROW1_H,
+        role: 'portrait',
       });
-      cursor += w + HGAP;
+      cursor += PORTRAIT_W + HGAP;
     }
   }
 
-  // Row 1: 10 portrait slots at uniform tall-shaped dims (113 × 200).
-  const PORTRAIT_W = 113;
-  fillCentreRow(portraitCount, row1Y, PORTRAIT_W, ROW1_H, 'portrait');
-
-  // Row 2: landscape slots. Width chosen so all photos fit in the
-  // centre row width with HGAP gaps.
-  const row2Count = Math.max(0, landscapeCount - (landscapeCount >= 1 ? 1 : 0));
-  if (row2Count > 0) {
-    const row2W = Math.floor((photoRowYawWidth - (row2Count - 1) * HGAP) / row2Count);
-    fillCentreRow(row2Count, row2Y, row2W, ROW2_H, 'photo');
+  // ---- Row 2 landscapes — vary slot count per segment for variety ----
+  // Edge segments: 3 slots (squarer cells, crop 16:9 sources toward
+  // 4:3 — user-approved). Centre segment: 2 wider slots (aspect ~1.5).
+  for (let i = 0; i < usable.length; i++) {
+    const seg = usable[i];
+    const segWidthWorld = (seg.yawRight - seg.yawLeft) * RADIUS;
+    const segCentreYaw  = (seg.yawLeft + seg.yawRight) / 2;
+    const isCentre = (usable.length >= 3) && (i === Math.floor(usable.length / 2));
+    const count = isCentre ? 2 : 3;
+    const slotW = Math.floor((segWidthWorld - (count - 1) * HGAP) / count);
+    const totalW = count * slotW + (count - 1) * HGAP;
+    let cursor = -totalW / 2;
+    for (let j = 0; j < count; j++) {
+      slots.push({
+        yaw: yawC + segCentreYaw + (cursor + slotW / 2) / RADIUS,
+        y:   row2Y,
+        w:   slotW,
+        h:   ROW2_H,
+        role: 'photo',
+      });
+      cursor += slotW + HGAP;
+    }
   }
 
   return slots;
