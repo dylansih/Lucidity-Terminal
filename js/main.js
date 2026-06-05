@@ -98,36 +98,49 @@ const HGAP = 14;
 /* 2×5 cover layout.
    Each panel is the size of ~four of the old small photo panels —
    wide enough to read as a hero, tall enough to span what used to be
-   two rows. The two rows together cover the same vertical extent as
-   the old four-row grid (≈ ±320 y), and the per-row arc roughly
-   matches the old top row's arc, so the dome footprint is unchanged. */
+   two rows. Cover dims are 85 % of the original 370 × 305 and the
+   per-row gap is widened to 83 so that the row's horizontal span
+   stays the same. The y-offset is also bumped from ±166 to ±190 so
+   the cluster's vertical span matches the original. Net result:
+   covers are 15 % smaller in both dimensions with noticeably more
+   air between them, but the dome footprint feels unchanged. */
 const ROWS = [
   // top row — covers 1–5
-  { y:  166, h: 305, ws: [370, 370, 370, 370, 370] },
+  { y:  190, h: 259, ws: [315, 315, 315, 315, 315], hgap: 83 },
   // bottom row — covers 6–10
+  { y: -190, h: 259, ws: [315, 315, 315, 315, 315], hgap: 83 },
+];
+
+/* "Story" layout: what every individual story page assumes the
+   clicked cover looks like. We KEEP the original 370 × 305 cover
+   dims at y=±166 here so the entire story-template ecosystem (Utah,
+   Highschool, Canary Sand, Canary Full, etc.) stays exactly the
+   same as the user spent so long iterating on. The clicked cover
+   then animates up to these dims/position when the story opens. */
+const ROWS_STORY = [
+  { y:  166, h: 305, ws: [370, 370, 370, 370, 370] },
   { y: -166, h: 305, ws: [370, 370, 370, 370, 370] },
 ];
 
-function buildLayout() {
+function buildLayoutFromRows(rows) {
   const layout = [];
-  for (const row of ROWS) {
+  for (const row of rows) {
+    const gap = row.hgap !== undefined ? row.hgap : HGAP;
     const totalArc =
-      row.ws.reduce((s, w) => s + w, 0) + row.ws.length * HGAP;
-
-    // arc cursor walks along the cylinder surface in world units;
-    // dividing by RADIUS converts arc length to yaw (radians).
-    let arcCursor = -totalArc / 2 + HGAP / 2;
+      row.ws.reduce((s, w) => s + w, 0) + row.ws.length * gap;
+    let arcCursor = -totalArc / 2 + gap / 2;
     for (const w of row.ws) {
       const arcCenter = arcCursor + w / 2;
       const yawDeg = THREE.MathUtils.radToDeg(arcCenter / RADIUS);
       layout.push([yawDeg, row.y, w, row.h]);
-      arcCursor += w + HGAP;
+      arcCursor += w + gap;
     }
   }
   return layout;
 }
 
-const PANEL_LAYOUT = buildLayout();
+const PANEL_LAYOUT       = buildLayoutFromRows(ROWS);          // home grid
+const PANEL_LAYOUT_STORY = buildLayoutFromRows(ROWS_STORY);    // story-page reference
 
 /* Curved-panel geometry.
 
@@ -423,7 +436,8 @@ function makePanel(yawDeg, y, w, h, url) {
 const panelGroup = new THREE.Group();
 PANEL_LAYOUT.forEach((p, i) => {
   const url = IMAGES[i % IMAGES.length];
-  panelGroup.add(makePanel(...p, url));
+  const panel = makePanel(...p, url);
+  panelGroup.add(panel);
 });
 scene.add(panelGroup);
 
@@ -455,10 +469,13 @@ function buildTerminalCanvas() {
     'So much to learn, so much to feel, so many stories, so many lives lived in one. This is a peak into my life, my stories, my people and the places I’ve been.',
   ];
   const WELCOME = 'Welcome to my terminal.';
+  const HINT    = 'drag to look around';
+  const HINT2   = 'click to see more';
 
-  const TITLE_FONT = '600 132px "Neue Television", "Anton", "Bebas Neue", sans-serif';
-  const BODY_FONT  = '32px "Times New Roman", Georgia, serif';
+  const TITLE_FONT   = '600 132px "Neue Television", "Anton", "Bebas Neue", sans-serif';
+  const BODY_FONT    = '32px "Times New Roman", Georgia, serif';
   const WELCOME_FONT = 'italic 34px "Times New Roman", Georgia, serif';
+  const HINT_FONT    = '26px "Times New Roman", Georgia, serif';
 
   // first pass: measure title to size the canvas
   const probe = document.createElement('canvas').getContext('2d');
@@ -491,13 +508,18 @@ function buildTerminalCanvas() {
     return lines;
   }
 
-  const bodyBlocks = PARAGRAPHS.map(p => wrapLines(p, BODY_FONT));
+  const bodyBlocks   = PARAGRAPHS.map(p => wrapLines(p, BODY_FONT));
   const welcomeLines = wrapLines(WELCOME, WELCOME_FONT);
+  const hintLines    = wrapLines(HINT, HINT_FONT);
+  const hint2Lines   = wrapLines(HINT2, HINT_FONT);
 
   let bodyH = 0;
   for (const block of bodyBlocks) bodyH += block.length * LINE_H + PARA_GAP;
-  bodyH += LINE_H * welcomeLines.length;          // welcome trailing block
-  bodyH += PARA_GAP * 1.4;                         // extra breathing room before welcome
+  bodyH += LINE_H * welcomeLines.length;           // welcome trailing block
+  bodyH += PARA_GAP * 1.4;                          // breathing room before welcome
+  bodyH += PARA_GAP * 1.6;                          // breathing room before drag hint
+  bodyH += LINE_H * 0.85 * hintLines.length;        // drag hint at smaller line height
+  bodyH += LINE_H * 0.85 * hint2Lines.length;       // second hint line, same style
 
   const canvasW = Math.ceil(titleW + PAD_X * 2);
   const canvasH = Math.ceil(PAD_Y * 2 + 132 + TITLE_BODY_GAP + bodyH);
@@ -540,6 +562,23 @@ function buildTerminalCanvas() {
     ctx.fillText(line, canvasW / 2, y);
     y += LINE_H;
   }
+
+  // drag-to-look-around hint, in a smaller subdued style — this is
+  // the user's first navigation cue once they land on the page. A
+  // second hint right beneath it tells the user the covers they'll
+  // find by dragging are interactive.
+  y += PARA_GAP * 1.2;
+  ctx.font = HINT_FONT;
+  ctx.fillStyle = '#a59f93';                       // dimmer than the body text
+  for (const line of hintLines) {
+    ctx.fillText(line, canvasW / 2, y);
+    y += LINE_H * 0.85;
+  }
+  for (const line of hint2Lines) {
+    ctx.fillText(line, canvasW / 2, y);
+    y += LINE_H * 0.85;
+  }
+  ctx.fillStyle = '#e8e4dc';
 
   return { canvas, canvasW, canvasH };
 }
@@ -644,8 +683,31 @@ let mode = 'terminal';
 let currentStoryIdx = -1;
 
 // All meshes that should fade out when entering a story (photos + sign).
-const terminalFadeables = [...panelGroup.children, terminalSign];
+// panelGroup only holds cover panels now, so the array is the children
+// directly — no halo siblings to filter out.
+const coverPanels = [...panelGroup.children];
+const terminalFadeables = [...coverPanels, terminalSign];
 for (const m of terminalFadeables) m.userData.targetOpacity = 1;
+
+// Stash each cover panel's HOME position + the story-page target
+// position/scale so the click can animate the panel from the smaller
+// home dims (315 × 259 at y=±190) up to the original story dims
+// (370 × 305 at y=±166). The story-page layout templates all reference
+// PANEL_LAYOUT_STORY[idx], so the panel needs to end up at those coords
+// for the story cluster to align with it correctly.
+const STORY_TO_HOME_SCALE = ROWS_STORY[0].h / ROWS[0].h;   // 305/259 ≈ 1.178
+for (let i = 0; i < coverPanels.length; i++) {
+  const panel = coverPanels[i];
+  panel.userData.homePosition = panel.position.clone();
+  const [storyYawDeg, storyY] = PANEL_LAYOUT_STORY[i];
+  const storyYaw = THREE.MathUtils.degToRad(storyYawDeg);
+  panel.userData.storyPosition = new THREE.Vector3(
+     RADIUS * Math.sin(storyYaw),
+     storyY,
+    -RADIUS * Math.cos(storyYaw),
+  );
+}
+let storyAnimIdx = -1;            // which cover is currently animating to story dims
 
 // Group that holds whatever story-mode content is currently mounted.
 const storyGroup = new THREE.Group();
@@ -882,7 +944,7 @@ function buildStoryContent(idx) {
 function clusterPlace(idx, targetCount, makeNextCandidate) {
   const rand = mulberry32(idx + 1);
 
-  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT_STORY[idx];
   const yawC     = THREE.MathUtils.degToRad(yawCDeg);
   const HGAP_ARC = HGAP / RADIUS;
   const { yawHalfRange, yHalfRange, yBound, vgap } = CLUSTER_PARAMS;
@@ -952,7 +1014,7 @@ function row2SlotWidth(count) {
    to the cover. Mirrored for bottom-row covers so the cluster always
    extends AWAY from the dome edge. */
 function getStoryRowGeometry(idx) {
-  const [, yC, , hC] = PANEL_LAYOUT[idx];
+  const [, yC, , hC] = PANEL_LAYOUT_STORY[idx];
   const yDir = yC > 0 ? -1 : 1;
   const coverFarEdge = yC + yDir * hC / 2;
   const row1Edge     = coverFarEdge + yDir * HGAP;
@@ -971,7 +1033,7 @@ function getStoryRowGeometry(idx) {
 /* Slot template when there are NO vertical videos — original 3-row
    grid: cover row (2 hero slots) + row 1 (5) + row 2 (count − 7). */
 function getStandardSlots(idx, itemCount) {
-  const [yawCDeg, yC, wC] = PANEL_LAYOUT[idx];
+  const [yawCDeg, yC, wC] = PANEL_LAYOUT_STORY[idx];
   const yawC = THREE.MathUtils.degToRad(yawCDeg);
   const { row1Y, row2Y } = getStoryRowGeometry(idx);
 
@@ -1035,7 +1097,7 @@ function getStandardSlots(idx, itemCount) {
      videos to put in them.
    Designed for the common case of 1–2 tall videos + lots of photos. */
 function getTallVideoSlots(idx, tallCount, photoCount) {
-  const [yawCDeg, yC, wC] = PANEL_LAYOUT[idx];
+  const [yawCDeg, yC, wC] = PANEL_LAYOUT_STORY[idx];
   const yawC = THREE.MathUtils.degToRad(yawCDeg);
   const { row1Y, row2Y, tallY } = getStoryRowGeometry(idx);
 
@@ -1099,7 +1161,7 @@ function getTallVideoSlots(idx, tallCount, photoCount) {
      height the aspect would be too portrait for the landscape photos.
    Designed for 1 wide + 1 tall + ~10 photo (Utah). */
 function getMixedSlots(idx, items) {
-  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT_STORY[idx];
   const yawC = THREE.MathUtils.degToRad(yawCDeg);
   const yDir = yC > 0 ? -1 : 1;
   const { row1Y, row2Y } = getStoryRowGeometry(idx);
@@ -1189,7 +1251,7 @@ function getMixedSlots(idx, items) {
    portrait-shaped cell. Row 2 is unused — empty cylinder skin shows
    below row 1, which is fine because all media slots are above. */
 function getPortraitHeavySlots(idx, items) {
-  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT_STORY[idx];
   const yawC = THREE.MathUtils.degToRad(yawCDeg);
   const yDir = yC > 0 ? -1 : 1;
 
@@ -1267,7 +1329,7 @@ function getPortraitHeavySlots(idx, items) {
      places 23 of them; one portrait gets dropped via the assign
      queue's natural overflow. */
 function getMediaHeavySlots(idx, items) {
-  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT[idx];
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT_STORY[idx];
   const yawC = THREE.MathUtils.degToRad(yawCDeg);
   const yDir = yC > 0 ? -1 : 1;
 
@@ -1552,10 +1614,13 @@ function enterStory(panelIdx) {
   // The clicked panel is exempt — it stays fully opaque throughout
   // the transition so the user keeps the photo they tapped as a
   // visual anchor while the story content materialises around it.
-  const clicked = panelGroup.children[panelIdx];
+  const clicked = coverPanels[panelIdx];
   const fading  = terminalFadeables.filter(m => m !== clicked);
 
-  // Phase 1: stagger-fade the home content out.
+  // Phase 1: stagger-fade the home content out AND animate the clicked
+  // cover up to its story-page dims (370 × 305 at y=±166). The tick
+  // loop reads storyAnimIdx to drive the lerp.
+  storyAnimIdx = panelIdx;
   staggeredSet(fading, 0);
 
   // Phase 2 fires once Phase 1 is fully complete (everyone snapped
@@ -1576,10 +1641,12 @@ function exitStory() {
   mode = 'transitioning';
   if (hudEl) hudEl.textContent = HUD_TERMINAL;
 
-  const clicked = currentStoryIdx >= 0 ? panelGroup.children[currentStoryIdx] : null;
+  const clicked = currentStoryIdx >= 0 ? coverPanels[currentStoryIdx] : null;
   const returning = terminalFadeables.filter(m => m !== clicked);
 
-  // Phase 1: stagger-fade the story content out.
+  // Phase 1: stagger-fade the story content out AND animate the
+  // clicked cover back down to its home dims.
+  storyAnimIdx = -1;
   staggeredSet(storyGroup.children, 0);
 
   // Phase 2: dispose story, restore + stagger-fade-in home content.
@@ -1665,11 +1732,30 @@ function tryClickAtPointer(e) {
   pointerNDC.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
   pointerNDC.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointerNDC, camera);
-  const hits = raycaster.intersectObjects(panelGroup.children, false);
+  const hits = raycaster.intersectObjects(coverPanels, false);
   if (!hits.length) return;
-  const idx = panelGroup.children.indexOf(hits[0].object);
+  const idx = coverPanels.indexOf(hits[0].object);
   if (idx >= 0) enterStory(idx);
 }
+
+// ---- Hover state for cover panels ----
+// `hoveredCover` is updated on every pointermove (when not dragging
+// and still in terminal mode). The tick loop animates the hovered
+// panel's scale up as the hover cue.
+let hoveredCover = null;
+window.addEventListener('pointermove', (e) => {
+  if (mode !== 'terminal' || state.dragging) {
+    hoveredCover = null;
+    return;
+  }
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+  pointerNDC.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const hits = raycaster.intersectObjects(coverPanels, false);
+  hoveredCover = hits.length ? hits[0].object : null;
+  document.body.style.cursor = hoveredCover ? 'pointer' : '';
+});
 
 /* Pointer handling: no setPointerCapture — pointermove + pointerup
    are already attached to `window`, so a drag that wanders off the
@@ -1771,6 +1857,38 @@ function tick() {
   // drive fade animations
   for (const m of terminalFadeables) stepFade(m);
   for (const m of storyGroup.children) stepFade(m);
+
+  // Hover + story-enter animation. Per panel:
+  //   - Story mode (storyAnimIdx === i):   lerp scale → STORY_TO_HOME_SCALE
+  //                                        and position → storyPosition,
+  //                                        so the clicked cover grows up
+  //                                        to the size + slot the story
+  //                                        templates were authored for.
+  //   - Hovered home cover:                lerp scale → HOVER_SCALE — the
+  //                                        scale-up alone is the hover cue.
+  //   - Idle:                              scale → 1, position → homePos.
+  const HOVER_SCALE = 1.04;
+  const HOVER_LERP  = 0.18;
+  for (let i = 0; i < coverPanels.length; i++) {
+    const panel = coverPanels[i];
+    const isHovered  = (panel === hoveredCover) && mode === 'terminal';
+    const isStorying = (i === storyAnimIdx);
+
+    const targetScale = isStorying ? STORY_TO_HOME_SCALE
+                       : isHovered ? HOVER_SCALE
+                                   : 1.0;
+    panel.scale.x += (targetScale - panel.scale.x) * HOVER_LERP;
+    panel.scale.y = panel.scale.x;
+    panel.scale.z = panel.scale.x;
+
+    // Slide the panel toward its target position (home vs. story).
+    const targetPos = isStorying ? panel.userData.storyPosition
+                                 : panel.userData.homePosition;
+    panel.position.lerp(targetPos, HOVER_LERP);
+    // Re-aim at the dome's centre at the panel's current height so it
+    // stays tangent to the cylinder during the lerp.
+    panel.lookAt(0, panel.position.y, 0);
+  }
 
   // Keep the time uniform bounded so the grain hash inside FilmShader
   // doesn't drift. The hash is sensitive to its input magnitude: when

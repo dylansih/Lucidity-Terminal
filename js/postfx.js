@@ -99,12 +99,12 @@ export const FilmShader = {
     tDiffuse:        { value: null },
     time:            { value: 0 },
     resolution:      { value: new THREE.Vector2(1, 1) },
-    grainAmount:     { value: 0.13 },
+    grainAmount:     { value: 0.07 },     // softer static (was 0.13)
     sepiaAmount:     { value: 0.34 },
     desatAmount:     { value: 0.22 },
     contrastAmount:  { value: 0.96 },
     vignetteAmount:  { value: 0.55 },
-    scanlineAmount:  { value: 0.06 },
+    scanlineAmount:  { value: 0.04 },     // gentler scanlines (was 0.06)
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
