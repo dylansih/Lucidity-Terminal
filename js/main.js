@@ -824,6 +824,38 @@ const STORIES = {
     { t: 'video', u: 'media/story-04/v01.mp4', a: 1.778 },
     { t: 'video', u: 'media/story-04/v02.mp4', a: 1.778 },
   ],
+  // cover-06 — Stanford. 25 items total: 1 wide video + 9 portrait
+  // (tall) videos + 11 landscape photos + 4 portrait photos. Routes to
+  // the dedicated Stanford template because the tall-count (9) is
+  // higher than any other story; the media-heavy template was only
+  // tuned for ≤4 tall slots.
+  5: [
+    { t: 'image', u: 'media/story-06/p01.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p02.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p03.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p04.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p05.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p06.jpg', a: 1.500 },
+    { t: 'image', u: 'media/story-06/p07.jpg', a: 1.480 },
+    { t: 'image', u: 'media/story-06/p08.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p09.jpg', a: 1.333 },
+    { t: 'image', u: 'media/story-06/p10.jpg', a: 1.497 },
+    { t: 'image', u: 'media/story-06/p11.jpg', a: 1.333 },        // HEIC → JPG
+    { t: 'image', u: 'media/story-06/p12.jpg', a: 0.562 },
+    { t: 'image', u: 'media/story-06/p13.jpg', a: 0.667 },
+    { t: 'image', u: 'media/story-06/p14.jpg', a: 0.750 },
+    { t: 'image', u: 'media/story-06/p15.jpg', a: 0.750 },
+    { t: 'video', u: 'media/story-06/v01.mp4', a: 0.756 },        // IMG_8769 (Ray-Ban Meta)
+    { t: 'video', u: 'media/story-06/v02.mp4', a: 0.697 },        // IMG_4432
+    { t: 'video', u: 'media/story-06/v03.mp4', a: 0.787 },        // 6261… clip
+    { t: 'video', u: 'media/story-06/v04.mp4', a: 0.5625 },
+    { t: 'video', u: 'media/story-06/v05.mp4', a: 0.5625 },
+    { t: 'video', u: 'media/story-06/v06.mp4', a: 0.5625 },
+    { t: 'video', u: 'media/story-06/v07.mp4', a: 0.5625 },
+    { t: 'video', u: 'media/story-06/v08.mp4', a: 0.5625 },
+    { t: 'video', u: 'media/story-06/v09.mp4', a: 0.5625 },
+    { t: 'video', u: 'media/story-06/v10.mp4', a: 1.778 },        // IMG_1493 (landscape)
+  ],
   // cover-05 — Canary Full. 19 photos (9 landscape, 10 portrait) +
   // 5 videos (1 wide, 4 tall). Routes to the media-heavy template
   // because itemCount > 16.
@@ -1450,8 +1482,149 @@ function getMediaHeavySlots(idx, items) {
   return slots;
 }
 
+/* Slot template for cover-06 (Stanford). 25 items: 1 wide video + 9
+   tall videos + 11 landscape photos + 4 portrait photos. The
+   media-heavy template only handles up to 4 tall slots, so this is
+   its own thing.
+
+   Strategy: TWO photo/video rows above the cover band, with both
+   "full-tall" slots (span row 1 + row 2) and "row-1-only tall" slots
+   interspersed with photo slots. The result is a cluster where tall
+   videos and photos alternate across the yaw extent — no banding of
+   "all videos here, all photos there" — and the mix of slot sizes
+   (170×336, 100×200, 240×200, varied row-2 widths) gives the visual
+   variety the user wanted while every gap stays at HGAP for parity
+   with the other stories.
+
+   Slot inventory (25 total):
+     Cover band  : 1 wide-video slot (LEFT) + 1 landscape-photo slot (RIGHT)
+     Row 1       : 5 full-tall + 4 row-1-tall + 4 wide-photo + 1 portrait
+     Row 2       : 9 photos beneath each non-full-tall row-1 column
+
+   Cluster spans ≈ ±2.6 rad (≈ ±149°) — wider than other stories,
+   which the user explicitly OKed since Stanford has the most content. */
+function getStanfordSlots(idx, items) {
+  void items;                                            // shape comes from manifest, not inspected here
+  const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT_STORY[idx];
+  const yawC = THREE.MathUtils.degToRad(yawCDeg);
+  const yDir = yC > 0 ? -1 : 1;
+
+  // Y geometry. Same HGAP-based stacking as other templates so the
+  // vertical rhythm of the page matches them.
+  const coverNearEdgeY = yC + yDir * hC / 2;            // cover edge facing the rows
+  const ROW1_H = 200;
+  const row1Y  = coverNearEdgeY + yDir * (HGAP + ROW1_H / 2);
+  const row1FarEdgeY = row1Y + yDir * ROW1_H / 2;
+  const ROW2_H = 122;
+  const row2Y  = row1FarEdgeY + yDir * (HGAP + ROW2_H / 2);
+  const row2FarEdgeY = row2Y + yDir * ROW2_H / 2;
+
+  // Full-tall slot: spans row 1 + HGAP + row 2 (height 336). Width
+  // 170 → aspect 0.506; 9:16 sources cover-crop ~10% from the sides,
+  // which is barely visible. Chose narrower than the canonical 189
+  // so the cluster stays within ±150° instead of wrapping the entire
+  // dome — Stanford has more items than any other story, but the
+  // user still has to drag to reach the edges.
+  const TALL_W = 170;
+  const TALL_H = ROW1_H + HGAP + ROW2_H;                 // 336
+  const tallY  = (row1Y - yDir * ROW1_H / 2 + row2FarEdgeY) / 2;
+
+  // Slot palette for Row 1 (left → right). Each entry is a width +
+  // role; the cumulative arc cursor below converts these into yaw.
+  // 5 full-tall + 4 row-1-tall + 4 wide-photo + 1 portrait-photo = 14.
+  //
+  // The order is deliberately mixed (photo, tall, tall, photo, tall,
+  // portrait, photo, tall, tall, …) so videos and photos alternate
+  // across the cluster rather than clumping. The widths are also
+  // mixed: full-tall (170), row-1-tall (100), wide-photo (240),
+  // portrait-photo (100) — gives the visual variety in slot sizes
+  // the user asked for, with HGAP (14) gaps between every adjacent
+  // slot to match the other stories' rhythm.
+  const ROW1_DEFS = [
+    { w: 240, role: 'photo'                       },     // 1
+    { w: TALL_W, role: 'tall', spanRow2: true     },     // 2
+    { w: 100, role: 'tall'                        },     // 3 (row-1 only)
+    { w: 240, role: 'photo'                       },     // 4
+    { w: TALL_W, role: 'tall', spanRow2: true     },     // 5
+    { w: 100, role: 'portrait'                    },     // 6 (single portrait-photo slot)
+    { w: 240, role: 'photo'                       },     // 7
+    { w: 100, role: 'tall'                        },     // 8
+    { w: TALL_W, role: 'tall', spanRow2: true     },     // 9
+    { w: 240, role: 'photo'                       },     // 10
+    { w: 100, role: 'tall'                        },     // 11
+    { w: TALL_W, role: 'tall', spanRow2: true     },     // 12
+    { w: 100, role: 'tall'                        },     // 13
+    { w: TALL_W, role: 'tall', spanRow2: true     },     // 14
+  ];
+
+  // Compute the row's total arc width so we can centre it on yawC.
+  const totalRowWidth =
+    ROW1_DEFS.reduce((s, d) => s + d.w, 0) +
+    (ROW1_DEFS.length - 1) * HGAP;
+  let cursor = -totalRowWidth / 2;
+
+  const slots = [];
+
+  // ---- Cover band: wide video LEFT + landscape photo RIGHT ----
+  const cv = STORY_SLOT_DIMS.coverVideo;
+  const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
+  slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide'  });
+  slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'photo' });
+
+  // ---- Row 1 + spanning tall slots ----
+  // Each Row 1 def becomes either a tall slot (full height, span both
+  // rows) OR a normal Row 1 slot. Tall slots that span both rows mean
+  // NO Row 2 slot directly underneath them — we record which columns
+  // are "free" so Row 2 can place a slot there too.
+  const row2Cols = [];                                   // { yawOff, w } per non-spanning column
+  for (const def of ROW1_DEFS) {
+    const slotYawOff = (cursor + def.w / 2) / RADIUS;
+    if (def.spanRow2) {
+      // Spanning tall slot: 189 × 336 at tallY, no Row 2 below.
+      slots.push({
+        yaw:  yawC + slotYawOff,
+        y:    tallY,
+        w:    TALL_W,
+        h:    TALL_H,
+        role: 'tall',
+      });
+    } else {
+      // Row-1-only slot at row1Y, ROW1_H tall.
+      slots.push({
+        yaw:  yawC + slotYawOff,
+        y:    row1Y,
+        w:    def.w,
+        h:    ROW1_H,
+        role: def.role,
+      });
+      // Reserve a row-2 slot beneath, same column width.
+      row2Cols.push({ yawOff: slotYawOff, w: def.w });
+    }
+    cursor += def.w + HGAP;
+  }
+
+  // ---- Row 2: one slot per non-spanning Row 1 column ----
+  // Narrow row-2 columns (matching a row-1-tall column above) come out
+  // ~square (113×122), which crops a landscape photo gently but a
+  // portrait photo even more gently — so flag them as 'portrait' so
+  // the assignment queue routes the 4 portrait sources there before
+  // falling back to landscapes. Wide columns (270×122) stay 'photo'.
+  for (const col of row2Cols) {
+    slots.push({
+      yaw:  yawC + col.yawOff,
+      y:    row2Y,
+      w:    col.w,
+      h:    ROW2_H,
+      role: col.w <= 150 ? 'portrait' : 'photo',
+    });
+  }
+
+  return slots;
+}
+
 /* Dispatcher: picks the correct slot template for the story's mix.
-   - itemCount > 16 → media-heavy template (Canary Full).
+   - cover-06 (Stanford)         → dedicated 25-item template.
+   - itemCount > 16              → media-heavy template (Canary Full).
    - `portraitCount >= 3` + no tall → portrait-heavy template
      (Canary Sand).
    - any tall + no wide          → all-tall (Utah, if both portrait).
@@ -1463,6 +1636,7 @@ function getStorySlots(idx, items) {
   const photoCount    = items.filter(it => it.t === 'image').length;
   const portraitCount = items.filter(it => it.t === 'image' && it.a < 1).length;
 
+  if (idx === 5)                             return getStanfordSlots(idx, items);
   if (items.length > 16)                     return getMediaHeavySlots(idx, items);
   if (tallCount === 0 && portraitCount >= 3) return getPortraitHeavySlots(idx, items);
   if (tallCount === 0)                       return getStandardSlots(idx, items.length);
