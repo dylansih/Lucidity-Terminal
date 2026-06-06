@@ -1487,22 +1487,49 @@ function getMediaHeavySlots(idx, items) {
    media-heavy template only handles up to 4 tall slots, so this is
    its own thing.
 
-   Strategy: TWO photo/video rows above the cover band, with both
-   "full-tall" slots (span row 1 + row 2) and "row-1-only tall" slots
-   interspersed with photo slots. The result is a cluster where tall
-   videos and photos alternate across the yaw extent — no banding of
-   "all videos here, all photos there" — and the mix of slot sizes
-   (170×336, 100×200, 240×200, varied row-2 widths) gives the visual
-   variety the user wanted while every gap stays at HGAP for parity
-   with the other stories.
+   Layout philosophy (after first iteration):
+   - Pack the COVER BAND with 6 large side items so the row containing
+     the cover doesn't read as sparse next to a content-packed band
+     above. All 6 share the cover's Y level so the user's natural
+     viewing angle (centred on the cover) is full of content.
+   - Use FEWER but LARGER items in Row 1 and Row 2 so nothing gets
+     scaled down to thumbnails. All 9 tall video sources go through
+     row-1-tall slots (or cover-band tall slots) so portrait videos
+     stay portrait-shaped, never letterboxed into a row-2 strip.
+   - Match cluster width approximately across all three bands so the
+     cluster reads as one rectangular block, not a hollow inverted-T.
+   - Every adjacent gap is HGAP (14) horizontally and vertically, in
+     keeping with the other stories.
 
    Slot inventory (25 total):
-     Cover band  : 1 wide-video slot (LEFT) + 1 landscape-photo slot (RIGHT)
-     Row 1       : 5 full-tall + 4 row-1-tall + 4 wide-photo + 1 portrait
-     Row 2       : 9 photos beneath each non-full-tall row-1 column
+     Cover band (h=305): cover + 6 side items
+        Left side  : [wide-video 460] [tall-V 170] [med-photo 240]
+        Right side : [med-photo 240] [tall-V 170] [wide-photo 460]
+        → 1 wide video + 2 tall videos + 3 landscape photos
+     Row 1 (h=200, 11 items — the WIDEST row by design)
+        All 7 remaining tall videos and 4 landscape photos packed
+        together. Multiple tall videos sit next to each other so the
+        row reads as one densely-filled band; the periodic landscape
+        photos break the rhythm.
+        → 7 tall videos + 4 landscape photos
+     Row 2 (h=122, 8 items, mixed widths for shape variety)
+        Wide slots (240) for landscape photos alternating with narrow
+        slots (100) for portrait photos. No videos here — all 9 tall
+        videos now live in row 1 or the cover band.
+        → 4 portrait photos + 4 landscape photos
 
-   Cluster spans ≈ ±2.6 rad (≈ ±149°) — wider than other stories,
-   which the user explicitly OKed since Stanford has the most content. */
+   Item budget:
+        cover band  : 1 wide + 2 tall + 3 landscape       = 6 items
+        row 1       : 7 tall + 4 landscape                = 11 items
+        row 2       : 4 portrait + 4 landscape            = 8 items
+        TOTAL                                               25 ✓
+
+   Cluster widths (rough cluster-half yaw):
+        cover band  : ±131° (wider base of cluster)
+        row 1       : ±146° (WIDEST — packed with videos and photos)
+        row 2       : ±87°  (narrower top, landscapes + portraits)
+   Row 1 being the widest means when the user pitches up slightly from
+   the cover, the cluster's most content-rich band fills the horizon. */
 function getStanfordSlots(idx, items) {
   void items;                                            // shape comes from manifest, not inspected here
   const [yawCDeg, yC, wC, hC] = PANEL_LAYOUT_STORY[idx];
@@ -1517,109 +1544,129 @@ function getStanfordSlots(idx, items) {
   const row1FarEdgeY = row1Y + yDir * ROW1_H / 2;
   const ROW2_H = 122;
   const row2Y  = row1FarEdgeY + yDir * (HGAP + ROW2_H / 2);
-  const row2FarEdgeY = row2Y + yDir * ROW2_H / 2;
-
-  // Full-tall slot: spans row 1 + HGAP + row 2 (height 336). Width
-  // 170 → aspect 0.506; 9:16 sources cover-crop ~10% from the sides,
-  // which is barely visible. Chose narrower than the canonical 189
-  // so the cluster stays within ±150° instead of wrapping the entire
-  // dome — Stanford has more items than any other story, but the
-  // user still has to drag to reach the edges.
-  const TALL_W = 170;
-  const TALL_H = ROW1_H + HGAP + ROW2_H;                 // 336
-  const tallY  = (row1Y - yDir * ROW1_H / 2 + row2FarEdgeY) / 2;
-
-  // Slot palette for Row 1 (left → right). Each entry is a width +
-  // role; the cumulative arc cursor below converts these into yaw.
-  // 5 full-tall + 4 row-1-tall + 4 wide-photo + 1 portrait-photo = 14.
-  //
-  // The order is deliberately mixed (photo, tall, tall, photo, tall,
-  // portrait, photo, tall, tall, …) so videos and photos alternate
-  // across the cluster rather than clumping. The widths are also
-  // mixed: full-tall (170), row-1-tall (100), wide-photo (240),
-  // portrait-photo (100) — gives the visual variety in slot sizes
-  // the user asked for, with HGAP (14) gaps between every adjacent
-  // slot to match the other stories' rhythm.
-  const ROW1_DEFS = [
-    { w: 240, role: 'photo'                       },     // 1
-    { w: TALL_W, role: 'tall', spanRow2: true     },     // 2
-    { w: 100, role: 'tall'                        },     // 3 (row-1 only)
-    { w: 240, role: 'photo'                       },     // 4
-    { w: TALL_W, role: 'tall', spanRow2: true     },     // 5
-    { w: 100, role: 'portrait'                    },     // 6 (single portrait-photo slot)
-    { w: 240, role: 'photo'                       },     // 7
-    { w: 100, role: 'tall'                        },     // 8
-    { w: TALL_W, role: 'tall', spanRow2: true     },     // 9
-    { w: 240, role: 'photo'                       },     // 10
-    { w: 100, role: 'tall'                        },     // 11
-    { w: TALL_W, role: 'tall', spanRow2: true     },     // 12
-    { w: 100, role: 'tall'                        },     // 13
-    { w: TALL_W, role: 'tall', spanRow2: true     },     // 14
-  ];
-
-  // Compute the row's total arc width so we can centre it on yawC.
-  const totalRowWidth =
-    ROW1_DEFS.reduce((s, d) => s + d.w, 0) +
-    (ROW1_DEFS.length - 1) * HGAP;
-  let cursor = -totalRowWidth / 2;
 
   const slots = [];
 
-  // ---- Cover band: wide video LEFT + landscape photo RIGHT ----
-  const cv = STORY_SLOT_DIMS.coverVideo;
-  const coverYawDelta = (wC / 2 + HGAP + cv.w / 2) / RADIUS;
-  slots.push({ yaw: yawC - coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'wide'  });
-  slots.push({ yaw: yawC + coverYawDelta, y: yC, w: cv.w, h: cv.h, role: 'photo' });
+  /* ────────────── Cover band: cover + 6 side items ────────────── */
+  // From outer-left → inner-left → inner-right → outer-right, all at
+  // y=yC, all h=hC=305 so the band reads as one continuous height.
+  // Widths are mixed: wide (460) for the hero wide-video and the right
+  // anchor photo, tall (170, aspect 0.557) for the two portrait videos
+  // sitting next to the cover, medium (240, aspect 0.787) for the two
+  // photos flanking the cover.
+  const COVER_BAND = [
+    { w: 460, role: 'wide'  },                           // wide video (1 of 1)
+    { w: 170, role: 'tall'  },                           // portrait video
+    { w: 240, role: 'photo' },                           // landscape photo
+    /* cover slot is implicit at the centre */
+    { w: 240, role: 'photo' },                           // landscape photo
+    { w: 170, role: 'tall'  },                           // portrait video
+    { w: 460, role: 'photo' },                           // landscape photo (wide)
+  ];
 
-  // ---- Row 1 + spanning tall slots ----
-  // Each Row 1 def becomes either a tall slot (full height, span both
-  // rows) OR a normal Row 1 slot. Tall slots that span both rows mean
-  // NO Row 2 slot directly underneath them — we record which columns
-  // are "free" so Row 2 can place a slot there too.
-  const row2Cols = [];                                   // { yawOff, w } per non-spanning column
-  for (const def of ROW1_DEFS) {
-    const slotYawOff = (cursor + def.w / 2) / RADIUS;
-    if (def.spanRow2) {
-      // Spanning tall slot: 189 × 336 at tallY, no Row 2 below.
-      slots.push({
-        yaw:  yawC + slotYawOff,
-        y:    tallY,
-        w:    TALL_W,
-        h:    TALL_H,
-        role: 'tall',
-      });
-    } else {
-      // Row-1-only slot at row1Y, ROW1_H tall.
-      slots.push({
-        yaw:  yawC + slotYawOff,
-        y:    row1Y,
-        w:    def.w,
-        h:    ROW1_H,
-        role: def.role,
-      });
-      // Reserve a row-2 slot beneath, same column width.
-      row2Cols.push({ yawOff: slotYawOff, w: def.w });
+  // Compute cluster half-width so the cover band centres on yawC.
+  // We need: leftEdge → side1 → side2 → side3 → COVER → side4 → side5 → side6 → rightEdge
+  // with HGAP between every adjacent pair.
+  const coverBandTotalW =
+    COVER_BAND.reduce((s, d) => s + d.w, 0) + wC + (COVER_BAND.length + 1 - 1) * HGAP;
+  let cursor = -coverBandTotalW / 2;
+  for (let i = 0; i < COVER_BAND.length; i++) {
+    // Insert the cover at the middle slot position. The cover itself
+    // isn't pushed as a slot — the cover panel is the existing mesh
+    // that animates into place; we only push the SIDE items here.
+    if (i === COVER_BAND.length / 2) {
+      cursor += wC + HGAP;                               // skip the cover's slot
     }
+    const def = COVER_BAND[i];
+    slots.push({
+      yaw:  yawC + (cursor + def.w / 2) / RADIUS,
+      y:    yC,
+      w:    def.w,
+      h:    hC,
+      role: def.role,
+    });
     cursor += def.w + HGAP;
   }
 
-  // ---- Row 2: one slot per non-spanning Row 1 column ----
-  // Narrow row-2 columns (matching a row-1-tall column above) come out
-  // ~square (113×122), which crops a landscape photo gently but a
-  // portrait photo even more gently — so flag them as 'portrait' so
-  // the assignment queue routes the 4 portrait sources there before
-  // falling back to landscapes. Wide columns (270×122) stay 'photo'.
-  for (const col of row2Cols) {
-    slots.push({
-      yaw:  yawC + col.yawOff,
-      y:    row2Y,
-      w:    col.w,
-      h:    ROW2_H,
-      role: col.w <= 150 ? 'portrait' : 'photo',
-    });
-  }
+  /* ────────────────────── Row 1 (h=200) ─────────────────────── */
+  // 11 slots: 7 tall portrait-video cells (113 wide, aspect 0.565)
+  // and 4 wide landscape-photo cells (380 wide, aspect 1.9). The
+  // sequence is symmetric around the cluster centre with tall videos
+  // clustering 2-3 in a row in places — the user OKed multiple
+  // videos adjacent, the periodic landscape photos break it up.
+  //
+  // Cluster width: 4×380 + 7×113 + 10×14 = 2451 → ±146° (widest row).
+  const ROW1_TALL_W  = 113;
+  const ROW1_PHOTO_W = 380;     // aspect 1.9 — landscape photos crop ~30% vertically
+  const ROW1_DEFS = [
+    { w: ROW1_PHOTO_W, role: 'photo' },     // 1: left anchor photo
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 2
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 3
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 4
+    { w: ROW1_PHOTO_W, role: 'photo' },     // 5
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 6 (centre tall)
+    { w: ROW1_PHOTO_W, role: 'photo' },     // 7
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 8
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 9
+    { w: ROW1_TALL_W,  role: 'tall'  },     // 10
+    { w: ROW1_PHOTO_W, role: 'photo' },     // 11: right anchor photo
+  ];
+  pushRow(slots, ROW1_DEFS, yawC, row1Y, ROW1_H);
+
+  /* ────────────────────── Row 2 (h=122) ─────────────────────── */
+  // 8 slots, alternating wide landscape (240, aspect 1.97) with
+  // narrow portrait-photo cells (100, aspect 0.82). No videos here —
+  // all 9 tall video sources fit in cover band (2) + row 1 (7).
+  //
+  // Cluster width: 4×240 + 4×100 + 7×14 = 1458 → ±87° (narrowest row,
+  // sits at the top of the cluster where the user looks last).
+  const ROW2_DEFS = [
+    { w: 240, role: 'photo'    },
+    { w: 100, role: 'portrait' },
+    { w: 240, role: 'photo'    },
+    { w: 100, role: 'portrait' },
+    { w: 240, role: 'photo'    },
+    { w: 100, role: 'portrait' },
+    { w: 240, role: 'photo'    },
+    { w: 100, role: 'portrait' },
+  ];
+  pushRow(slots, ROW2_DEFS, yawC, row2Y, ROW2_H);
 
   return slots;
+}
+
+/* Helper: centre a horizontal row of slot defs on yawC and push them
+   onto `slots`. Each def is { w, role, [overhang] }. When `overhang`
+   is set, the slot is rendered as if it were a row-1-tall cell (h=200
+   centred above the nominal row y) instead of fitting the row height.
+   Used so Stanford row 2 can include a couple of portrait-video slots
+   without breaking the row's horizontal rhythm. */
+function pushRow(slots, defs, yawC, rowY, rowH) {
+  const totalW =
+    defs.reduce((s, d) => s + d.w, 0) + (defs.length - 1) * HGAP;
+  let cursor = -totalW / 2;
+  for (const def of defs) {
+    let h = rowH;
+    let y = rowY;
+    if (def.overhang) {
+      h = 200;                                           // matches ROW1_H
+      // Shift centre upward (away from cover) by (overhangH - rowH)/2
+      // so the slot's bottom edge still aligns with rowY's bottom edge.
+      // yC sign carries through PANEL_LAYOUT_STORY → here we infer the
+      // direction from rowY's sign relative to the dome equator: rows
+      // above 0 are "up" (yDir = +1 for bottom-row cover).
+      const yDir = rowY >= 0 ? 1 : -1;
+      y = rowY + yDir * (h - rowH) / 2;
+    }
+    slots.push({
+      yaw:  yawC + (cursor + def.w / 2) / RADIUS,
+      y,
+      w:    def.w,
+      h,
+      role: def.role,
+    });
+    cursor += def.w + HGAP;
+  }
 }
 
 /* Dispatcher: picks the correct slot template for the story's mix.
