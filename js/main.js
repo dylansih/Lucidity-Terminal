@@ -433,11 +433,147 @@ function makePanel(yawDeg, y, w, h, url) {
   return mesh;
 }
 
+/* Per-cover caption text. Shown on hover as a marquee scrolling
+   right→left along the bottom of the cover, behind a soft dark
+   tint that makes the light type readable over the photo. Only the
+   six covers with finished stories have captions; the rest stay
+   uncaptioned until their content is written. */
+const COVER_CAPTIONS = {
+  0: "Nathan. My brother, my best friend, my everything for life. I wouldn’t be where I am today without him.",
+  1: "Utah. My second home, where I go every winter to visit my grandparents and play in the snow. So many memories, both warm and cold.",
+  2: "Highschool. Corona del Mar, where I started taking more steps on my own, and meeting my best friends who I’m still close with to this day.",
+  3: "Canary Islands. There was a lot of sand – some light, some golden, some black; some in massive dunes, some in small flat secluded beaches – but all beautiful.",
+  4: "Canary Islands. There’s a whole lot more to this place other than sand. Just my dad and I, wandering around in a new world.",
+  5: "Stanford. The next big chapter of my life that I’m currently still living. Coming here has made me feel like I’ve lived under a rock my whole life.",
+};
+
+/* Texel density for caption canvases. Higher = sharper text but
+   bigger canvases. 4 px/world-unit gives noticeably crisper type
+   than the natural 1:1 mapping while keeping each canvas under a
+   couple of MB. */
+const CAPTION_TEXEL_PER_UNIT = 4;
+const CAPTION_STRIP_H        = 36;          // world-unit height of the marquee strip
+const CAPTION_FONT_PX        = 22 * 2;       // body font, DPR=2
+
+/* Render the caption text onto a long canvas + return a tiling
+   CanvasTexture set up so that animating texture.offset.x scrolls
+   the marquee right→left at a natural reading speed.
+
+   The canvas is sized to: text width + one strip-width of trailing
+   gap. With RepeatWrapping on, as offset.x advances from 0 → 1 the
+   visible portion sweeps once across the canvas; because the trailing
+   gap is exactly one strip wide, the moment the END of the text
+   reaches the LEFT edge of the strip, the BEGINNING of the text is
+   just entering at the RIGHT edge. That makes the seam invisible. */
+function buildCaptionTexture(text, stripW_world, stripH_world) {
+  const fontPx   = CAPTION_FONT_PX;
+  const heightPx = Math.round(stripH_world * CAPTION_TEXEL_PER_UNIT);
+  const stripPx  = Math.round(stripW_world * CAPTION_TEXEL_PER_UNIT);
+
+  // Measure text first (need a probe; the real canvas is sized once
+  // we know how wide the text is).
+  const probe = document.createElement('canvas').getContext('2d');
+  probe.font = `${fontPx}px "Times New Roman", Georgia, serif`;
+  const textWidthPx = Math.ceil(probe.measureText(text).width);
+
+  // canvasWidthPx = text + one strip-width of trailing gap, so the
+  // tail of the text and the head of the (wrapped) next copy are
+  // exactly strip-width apart → no visible seam between repetitions.
+  const canvasWidthPx = textWidthPx + stripPx;
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = canvasWidthPx;
+  canvas.height = heightPx;
+  const ctx = canvas.getContext('2d');
+  ctx.font = `${fontPx}px "Times New Roman", Georgia, serif`;
+  ctx.fillStyle    = '#e8e4dc';                // matches main intro text colour
+  ctx.textBaseline = 'middle';
+  ctx.textAlign    = 'left';
+  ctx.fillText(text, 0, heightPx / 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS      = THREE.RepeatWrapping;
+  tex.wrapT      = THREE.ClampToEdgeWrapping;
+  tex.minFilter  = THREE.LinearFilter;
+  tex.magFilter  = THREE.LinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = MAX_ANISO;
+
+  // The strip displays `stripPx / canvasWidthPx` of the canvas at a
+  // time. Setting repeat.x to that fraction maps 1 plane-u → that
+  // fraction of canvas-u, which means offset.x advancing by 1 sweeps
+  // the visible window across the full canvas exactly once.
+  tex.repeat.set(stripPx / canvasWidthPx, 1);
+
+  return tex;
+}
+
+/* Attach a darkening overlay + a scrolling-text strip to a cover
+   panel as children. When the user hovers the cover, the tick loop
+   fades both in (overlay → semi-transparent black, strip → opaque)
+   and animates the strip's texture offset to scroll the marquee.
+
+   Implemented as children of the cover so they automatically follow
+   the cover's scale (HOVER_SCALE during hover, STORY_TO_HOME_SCALE
+   during story enter) and position (story-mode lerp toward
+   storyPosition) without any extra sync code in the tick loop.
+
+   Render order: cover (0), overlay (1), strip (2). All three are
+   transparent with depthWrite off, so order is governed by
+   renderOrder, not depth — guarantees overlay paints on top of cover
+   and strip paints on top of overlay regardless of camera angle. */
+function attachCaption(panel, w, h, text) {
+  const r = Math.min(w, h) * 0.05;
+
+  // ---- Dark overlay: same dims + same rounded-rect mask as cover ----
+  const overlayMat = new THREE.MeshBasicMaterial({
+    color:       0x000000,
+    side:        THREE.DoubleSide,
+    alphaMap:    buildRoundedAlphaTexture(w, h, r),
+    transparent: true,
+    opacity:     0,
+    depthWrite:  false,
+  });
+  const overlay = new THREE.Mesh(buildCurvedPanelGeometry(w, h, RADIUS), overlayMat);
+  overlay.renderOrder = 1;
+  panel.add(overlay);
+  panel.userData.darkOverlay = overlay;
+
+  // ---- Text marquee strip at the bottom of the cover ----
+  const stripH = CAPTION_STRIP_H;
+  const tex = buildCaptionTexture(text, w, stripH);
+  const stripR = Math.min(w, stripH) * 0.05;
+  const stripMat = new THREE.MeshBasicMaterial({
+    color:       0xffffff,
+    side:        THREE.DoubleSide,
+    map:         tex,
+    alphaMap:    buildRoundedAlphaTexture(w, stripH, stripR),
+    transparent: true,
+    opacity:     0,
+    depthWrite:  false,
+  });
+  const strip = new THREE.Mesh(buildCurvedPanelGeometry(w, stripH, RADIUS), stripMat);
+  // Local-Y is world-Y on a panel that's lookAt'd horizontally at the
+  // dome centre, so shifting downward in local coords drops the strip
+  // to the bottom of the cover. tiny -Z nudge (toward camera) prevents
+  // any z-fighting if the GPU sorts equal-z objects ambiguously.
+  strip.position.set(0, -h / 2 + stripH / 2, -0.05);
+  strip.renderOrder = 2;
+  panel.add(strip);
+  panel.userData.textStrip   = strip;
+  panel.userData.textTexture = tex;
+}
+
 const panelGroup = new THREE.Group();
 PANEL_LAYOUT.forEach((p, i) => {
   const url = IMAGES[i % IMAGES.length];
   const panel = makePanel(...p, url);
   panelGroup.add(panel);
+  // Cover index `i` is also the index into STORIES / COVER_CAPTIONS.
+  // Skip the no-caption covers (currently indices 6..9) — they get
+  // no hover overlay at all, just the existing scale-up.
+  const caption = COVER_CAPTIONS[i];
+  if (caption) attachCaption(panel, p[2], p[3], caption);
 });
 scene.add(panelGroup);
 
@@ -2090,6 +2226,17 @@ function tick() {
   //   - Idle:                              scale → 1, position → homePos.
   const HOVER_SCALE = 1.04;
   const HOVER_LERP  = 0.18;
+  // Marquee fade + scroll. Overlay tint mutes the photo so the
+  // light type is legible even over bright skies / pale walls;
+  // 0.65 keeps the image readable but pulls midtones down enough
+  // that #e8e4dc text stays high-contrast. Strip opacity climbs to
+  // 1 so the type pops. CAPTION_SCROLL_SPEED is in canvas-u per
+  // second; 0.10 puts each character roughly under the user's eye
+  // for the ~250 ms it takes to read it.
+  const HOVER_OVERLAY_OPACITY = 0.65;
+  const HOVER_TEXT_OPACITY    = 1.0;
+  const CAPTION_SCROLL_SPEED  = 0.10;
+  const dt = Math.min(clock.getDelta(), 0.1);   // clamp to avoid huge jumps on tab-resume
   for (let i = 0; i < coverPanels.length; i++) {
     const panel = coverPanels[i];
     const isHovered  = (panel === hoveredCover) && mode === 'terminal';
@@ -2109,6 +2256,46 @@ function tick() {
     // Re-aim at the dome's centre at the panel's current height so it
     // stays tangent to the cylinder during the lerp.
     panel.lookAt(0, panel.position.y, 0);
+
+    // ---- Hover caption (dark overlay + scrolling marquee) ----
+    // Caption only when actively hovered in terminal mode AND not
+    // mid-story-transition (otherwise the marquee would briefly
+    // appear during the cover's grow-into-story animation).
+    const showCaption = isHovered && !isStorying;
+    const overlay = panel.userData.darkOverlay;
+    const strip   = panel.userData.textStrip;
+    const tex     = panel.userData.textTexture;
+    if (overlay) {
+      const tgtOp = showCaption ? HOVER_OVERLAY_OPACITY : 0;
+      overlay.material.opacity += (tgtOp - overlay.material.opacity) * HOVER_LERP;
+    }
+    if (strip && tex) {
+      // Rising edge of hover: rewind the marquee so the first word
+      // is just about to enter from the right edge. Otherwise the
+      // user starts mid-sentence (or mid-gap) and has to wait a
+      // full loop to catch the beginning.
+      //
+      // Why `1 - repeat.x`: the strip samples
+      //   canvas_u = strip_u * repeat.x + offset.x
+      // so at this offset the strip's RIGHT edge (strip_u=1) lands
+      // exactly at canvas_u=1 — the wrap point, i.e. the very first
+      // pixel of the text. Advancing offset from here scrolls the
+      // text leftward into the strip from the right.
+      const wasShowingCaption = panel.userData.wasShowingCaption || false;
+      if (showCaption && !wasShowingCaption) {
+        tex.offset.x = 1 - tex.repeat.x;
+      }
+      panel.userData.wasShowingCaption = showCaption;
+
+      const tgtOp = showCaption ? HOVER_TEXT_OPACITY : 0;
+      strip.material.opacity += (tgtOp - strip.material.opacity) * HOVER_LERP;
+      // Advance the scroll whenever the strip is at all visible.
+      // Advancing while it's still fading out keeps the in-progress
+      // motion smooth (no freeze frame mid-fade).
+      if (strip.material.opacity > 0.01) {
+        tex.offset.x = (tex.offset.x + CAPTION_SCROLL_SPEED * dt) % 1.0;
+      }
+    }
   }
 
   // Keep the time uniform bounded so the grain hash inside FilmShader
